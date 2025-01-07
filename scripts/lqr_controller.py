@@ -2,9 +2,10 @@
 import rclpy
 import numpy as np
 import rowan
-from crazyflie_interface_py.base_controller import BaseController
+from crazyflie_interface_py.template_controller import TemplateController
 
-class LQRController(BaseController):
+
+class LQRController(TemplateController):
     def __init__(self, node_name='lqr_controller'):
         super().__init__(node_name)
         gain_matrix = np.zeros((4, 7))
@@ -34,7 +35,7 @@ class LQRController(BaseController):
     
     def __call__(self, state):            
         euler_angles = rowan.to_euler(([state[9], state[6], state[7], state[8]]), "xyz")
-        yaw = -euler_angles[2]  # FIXME: Check if we need to flip yaw for sim
+        yaw = euler_angles[2]
         near_hover_state = np.concatenate([state[0:6], np.array([yaw])])
         u = self.u_hover + self.gain_matrix @ (near_hover_state - np.concatenate((self.goal_position, np.zeros(4))))
         u[:2] = np.clip(u[:2], -0.2, 0.2)

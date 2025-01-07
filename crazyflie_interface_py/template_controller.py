@@ -6,8 +6,8 @@ from example_interfaces.msg import Float64MultiArray
 
 
 
-class BaseController(Node):
-    def __init__(self, node_name='base_controller', controller_rate=50.0):
+class TemplateController(Node):
+    def __init__(self, node_name='template_controller', controller_rate=50.0):
         super().__init__(node_name)
         self.controller_rate = controller_rate
         # Subclasses should call start_controller() at the end of their __init__ method
@@ -20,6 +20,9 @@ class BaseController(Node):
     
     def callback_state(self, msg):
         self.state = np.array(msg.data)
+
+    def __call__(self, state):
+        raise NotImplementedError("Must be subclassed")
 
     def publish_control(self):
         if self.state is None:

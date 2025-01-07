@@ -134,6 +134,8 @@ class CfInterface(Node):
         control_drone = control_model.copy()
         control_drone[:3] = np.degrees(control_drone[:3])
         control_drone[:2] = np.clip(control_drone[:2], -90, 90)  # No clipping on yaw rate
+        if self.backend == "sim":
+            control_drone[2] = -control_drone[2]  # Inverting yaw rate for simulation
         control_drone[3] = np.clip(control_drone[3] * 4096.0, 10000, 65535)  # Clipping required to function
         # TODO: Clipping if desired (I think this shouldn't be set in the interface, but rather own algorithm)
         return control_drone
