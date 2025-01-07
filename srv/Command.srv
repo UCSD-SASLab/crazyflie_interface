@@ -1,0 +1,5 @@
+# Command.srv
+string command  # Command: "Takeoff", "Land", or "Calibrate"
+---
+bool success
+string message

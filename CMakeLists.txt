@@ -7,9 +7,27 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
-# uncomment the following section in order to fill in
-# further dependencies manually.
-# find_package(<dependency> REQUIRED)
+find_package(ament_cmake_python REQUIRED)
+find_package(rclpy REQUIRED)
+find_package(example_interfaces REQUIRED)
+find_package(crazyflie_interfaces REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+
+ament_python_install_package(${PROJECT_NAME}_py)
+
+install(DIRECTORY
+  launch
+  DESTINATION share/${PROJECT_NAME})
+
+install(PROGRAMS
+  scripts/cf_interface.py
+  scripts/lqr_controller.py
+  DESTINATION lib/${PROJECT_NAME})
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "srv/Command.srv"
+  )
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
