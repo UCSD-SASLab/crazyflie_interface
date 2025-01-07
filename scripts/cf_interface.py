@@ -72,7 +72,7 @@ class CfInterface(Node):
                 # 1. Stop sending low level control commands
                 self.toggle_in_flight()
                 # 2. Inform drone of no more low level commands
-                req = NotifySetpointstop.Request()
+                req = NotifySetpointsStop.Request()
                 req.group_mask = 0 
                 req.remain_valid_millisecs = 10
                 self.notify_setpointstop_service.call_async(req)
