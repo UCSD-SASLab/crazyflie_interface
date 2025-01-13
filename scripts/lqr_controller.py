@@ -27,9 +27,9 @@ class LQRController(TemplateController):
         self.start_controller()
 
     def generate_random_goal(self):
-        p_x = np.random.uniform(-5.0, 5.0)
-        p_y = np.random.uniform(-2.5, 2.5)
-        p_z = np.random.uniform(0.5, 2.5)
+        p_x = np.random.uniform(-3.5, 3.5)
+        p_y = np.random.uniform(-1.5, 1.5)
+        p_z = np.random.uniform(0.5, 2.2)
         self.get_logger().info("New goal: {:.1f}, {:.1f}, {:.1f}".format(p_x, p_y, p_z))
         self.goal_position = np.array([p_x, p_y, p_z])
     
