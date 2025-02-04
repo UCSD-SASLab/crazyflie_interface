@@ -23,6 +23,7 @@ install(DIRECTORY
 install(PROGRAMS
   scripts/cf_interface.py
   scripts/lqr_controller.py
+  scripts/cbf.py
   DESTINATION lib/${PROJECT_NAME})
 
 rosidl_generate_interfaces(${PROJECT_NAME}
