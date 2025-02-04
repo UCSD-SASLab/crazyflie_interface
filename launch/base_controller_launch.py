@@ -22,6 +22,12 @@ def generate_launch_description():
             name='lqr_controller',
             output='screen',
         ),
+        Node(
+            package='crazyflie_interface',
+            executable='cbf.py',
+            name = 'cbf_controller',
+            output='screen',
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource([
                 PathJoinSubstitution([

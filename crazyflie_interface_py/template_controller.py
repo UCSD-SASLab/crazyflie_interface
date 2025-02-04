@@ -7,7 +7,7 @@ from example_interfaces.msg import Float64MultiArray
 
 
 class TemplateController(Node):
-    def __init__(self, node_name='template_controller', controller_rate=50.0):
+    def __init__(self, node_name='template_controller', controller_rate=10.0):
         super().__init__(node_name)
         self.controller_rate = controller_rate
         # Subclasses should call start_controller() at the end of their __init__ method

@@ -42,7 +42,7 @@ class CfInterface(Node):
         self.state_publisher = self.create_publisher(Float64MultiArray, 'cf_interface/state', 10)
 
         # Control sub/pub
-        self.create_subscription(Float64MultiArray, 'cf_interface/control', self.callback_control, 10)
+        self.create_subscription(Float64MultiArray, 'cbf/control', self.callback_control, 10)
         if self.backend in ["cflib", "sim"]:
             self.low_level_controller_pub = self.create_publisher(Twist, 'cf231/cmd_vel_legacy', 10)
         else:
@@ -62,7 +62,7 @@ class CfInterface(Node):
                 req.height = 0.5
                 req.duration = rclpy.duration.Duration(seconds=2.0).to_msg()
                 self.takeoff_service.call_async(req)
-                self.takeoff_timer = self.create_timer(5.0, self.toggle_in_flight)
+                self.takeoff_timer = self.create_timer(2.0, self.toggle_in_flight)
                 response.success = True
         elif request.command == "land":
             if not self.in_flight:
@@ -74,7 +74,7 @@ class CfInterface(Node):
                 # 2. Inform drone of no more low level commands
                 req = NotifySetpointsStop.Request()
                 req.group_mask = 0 
-                req.remain_valid_millisecs = 10
+                req.remain_valid_millisecs = 50
                 self.notify_setpointstop_service.call_async(req)
                 # 3. Send land command (twice to ensure it is not missed)
                 req = Land.Request()
@@ -97,6 +97,7 @@ class CfInterface(Node):
         if not self.in_flight:
             # Initialize low level controller
             for _ in range(5):
+                self.get_logger().info("Publishing zeros")
                 self.low_level_controller_pub.publish(self.zero_control_out_msg)
             self.destroy_timer(self.takeoff_timer)
         self.in_flight = not self.in_flight
