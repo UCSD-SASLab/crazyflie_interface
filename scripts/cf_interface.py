@@ -34,7 +34,7 @@ class CfInterface(Node):
         self.declare_parameter("backend", rclpy.Parameter.Type.STRING)
         self.backend = self.get_parameter("backend").value
         self.get_logger().info("Backend: {}".format(self.backend))
-        if self.backend in ["cflib", "sim"]:
+        if self.backend in ["cflib", "sim", "pyb"]:
             self.get_logger().info("Subscribing to cf231/odom")
             self.create_subscription(Odometry, 'cf231/odom', self.callback_state, 10)
         else: 
@@ -43,7 +43,7 @@ class CfInterface(Node):
 
         # Control sub/pub
         self.create_subscription(Float64MultiArray, 'cf_interface/control', self.callback_control, 10)
-        if self.backend in ["cflib", "sim"]:
+        if self.backend in ["cflib", "sim", "pyb"]:
             self.low_level_controller_pub = self.create_publisher(Twist, 'cf231/cmd_vel_legacy', 10)
         else:
             raise NotImplementedError("Backend not yet supported")
@@ -134,7 +134,7 @@ class CfInterface(Node):
         control_drone = control_model.copy()
         control_drone[:3] = np.degrees(control_drone[:3])
         control_drone[:2] = np.clip(control_drone[:2], -90, 90)  # No clipping on yaw rate
-        if self.backend == "sim":
+        if self.backend in ["sim","pyb"]:
             control_drone[2] = -control_drone[2]  # Inverting yaw rate for simulation
         control_drone[3] = np.clip(control_drone[3] * 4096.0, 10000, 65535)  # Clipping required to function
         # TODO: Clipping if desired (I think this shouldn't be set in the interface, but rather own algorithm)
