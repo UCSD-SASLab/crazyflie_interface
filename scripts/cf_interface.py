@@ -6,7 +6,7 @@ from crazyflie_interface.srv import Command
 from crazyflie_interfaces.srv import Takeoff, Land, NotifySetpointsStop
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
-from example_interfaces.msg import Float64MultiArray
+from example_interfaces.msg import Float32MultiArray
 
 
 class CfInterface(Node):
@@ -39,10 +39,10 @@ class CfInterface(Node):
             self.create_subscription(Odometry, 'cf231/odom', self.callback_state, 10)
         else: 
             raise NotImplementedError("Backend not yet supported")
-        self.state_publisher = self.create_publisher(Float64MultiArray, 'cf_interface/state', 10)
+        self.state_publisher = self.create_publisher(Float32MultiArray, 'cf_interface/state', 10)
 
         # Control sub/pub
-        self.create_subscription(Float64MultiArray, 'cf_interface/control', self.callback_control, 10)
+        self.create_subscription(Float32MultiArray, 'cf_interface/control', self.callback_control, 10)
         if self.backend in ["cflib", "sim"]:
             self.low_level_controller_pub = self.create_publisher(Twist, 'cf231/cmd_vel_legacy', 10)
         else:
@@ -104,29 +104,29 @@ class CfInterface(Node):
     def callback_state(self, msg):
         # Depends on the type of message received 
         # TODO: Check how it works to interface with pybullet_drones in ros?
-        if type(msg) == Odometry:
+        if isinstance(msg, Odometry):
             pos = np.array([msg.pose.pose.position.x, msg.pose.pose.position.y, msg.pose.pose.position.z])
             vel = np.array([msg.twist.twist.linear.x, msg.twist.twist.linear.y, msg.twist.twist.linear.z])
             quat = np.array([msg.pose.pose.orientation.x, msg.pose.pose.orientation.y, msg.pose.pose.orientation.z, 
                              msg.pose.pose.orientation.w])
             omega = np.array([msg.twist.twist.angular.x, msg.twist.twist.angular.y, msg.twist.twist.angular.z])
             self.state = np.concatenate((pos, vel, quat, omega))
-            self.state_publisher.publish(Float64MultiArray(data=self.state))
+            self.state_publisher.publish(Float32MultiArray(data=self.state))
         else:
             raise NotImplementedError("Message type not yet supported")
         
     def callback_control(self, msg):
-        assert type(msg) == Float64MultiArray and len(msg.data) == 4
+        assert isinstance(msg, Float32MultiArray) and len(msg.data) == 4
         # Convert to units for the drone
         if not self.in_flight:
             return
         control = self.convert_and_clip_control(np.array(msg.data))
         # Publish control
         control_msg = Twist()
-        control_msg.linear.y = control[0]
-        control_msg.linear.x = control[1]
-        control_msg.angular.z = control[2]
-        control_msg.linear.z = control[3]
+        control_msg.linear.y = float(control[0])
+        control_msg.linear.x = float(control[1])
+        control_msg.angular.z = float(control[2])
+        control_msg.linear.z = float(control[3])
         self.low_level_controller_pub.publish(control_msg)
 
     def convert_and_clip_control(self, control_model):

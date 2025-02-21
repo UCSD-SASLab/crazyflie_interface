@@ -2,7 +2,7 @@
 import rclpy
 import numpy as np
 from rclpy.node import Node
-from example_interfaces.msg import Float64MultiArray
+from example_interfaces.msg import Float32MultiArray
 
 
 
@@ -11,9 +11,13 @@ class TemplateController(Node):
         super().__init__(node_name)
         self.controller_rate = controller_rate
         # Subclasses should call start_controller() at the end of their __init__ method
-        self.state = None
-        self.control_pub = self.create_publisher(Float64MultiArray, 'cf_interface/control', 1)
-        self.create_subscription(Float64MultiArray, 'cf_interface/state', self.callback_state, 1)
+        self.state = np.zeros(7)
+        if not hasattr(self, 'control_publisher_topic'):
+            self.control_publisher_topic = 'cf_interface/control'
+        if not hasattr(self, 'state_subscriber_topic'):
+            self.state_subscriber_topic = 'cf_interface/state'
+        self.control_pub = self.create_publisher(Float32MultiArray, self.control_publisher_topic, 1)
+        self.create_subscription(Float32MultiArray, self.state_subscriber_topic, self.callback_state, 1)
 
     def start_controller(self):
         self.create_timer(1.0 / self.controller_rate, self.publish_control)
@@ -28,6 +32,6 @@ class TemplateController(Node):
         if self.state is None:
             return
         u = list(self(self.state))
-        control_msg = Float64MultiArray()
+        control_msg = Float32MultiArray()
         control_msg.data = u
         self.control_pub.publish(control_msg)
