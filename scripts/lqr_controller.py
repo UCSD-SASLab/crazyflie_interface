@@ -3,6 +3,7 @@ import rclpy
 import numpy as np
 import rowan
 from crazyflie_interface_py.template_controller import TemplateController
+from example_interfaces.msg import Float64MultiArray
 
 
 class LQRController(TemplateController):
@@ -26,12 +27,16 @@ class LQRController(TemplateController):
         self.goal_position = np.array([0.0, 0.0, 1.0])  # Initial goal
         self.start_controller()
 
+        # Temporary position publisher
+        self.target_publisher = self.create_publisher(Float64MultiArray, 'cf231/target', 10)
+
     def generate_random_goal(self):
-        p_x = np.random.uniform(-3.5, 3.5)
-        p_y = np.random.uniform(-1.5, 1.5)
-        p_z = np.random.uniform(0.5, 2.2)
+        p_x = np.clip(self.goal_position[0] + np.random.uniform(-0.5, 0.5),-3.5,3.5)
+        p_y = np.clip(self.goal_position[1] + np.random.uniform(-0.5, 0.5),-3.5,3.5)
+        p_z = np.clip(self.goal_position[2] + np.random.uniform(-0.5, 0.5),0.5, 2.2)
         self.get_logger().info("New goal: {:.1f}, {:.1f}, {:.1f}".format(p_x, p_y, p_z))
         self.goal_position = np.array([p_x, p_y, p_z])
+        self.target_publisher.publish(Float64MultiArray(data=self.goal_position))
     
     def __call__(self, state):            
         euler_angles = rowan.to_euler(([state[9], state[6], state[7], state[8]]), "xyz")

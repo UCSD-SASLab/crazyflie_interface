@@ -4,8 +4,6 @@ import numpy as np
 from rclpy.node import Node
 from example_interfaces.msg import Float64MultiArray
 
-
-
 class TemplateController(Node):
     def __init__(self, node_name='template_controller', controller_rate=50.0):
         super().__init__(node_name)
