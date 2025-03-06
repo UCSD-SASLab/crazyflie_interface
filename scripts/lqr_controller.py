@@ -31,9 +31,12 @@ class LQRController(TemplateController):
         self.target_publisher = self.create_publisher(Float64MultiArray, 'cf231/target', 10)
 
     def generate_random_goal(self):
-        p_x = np.clip(self.goal_position[0] + np.random.uniform(-0.5, 0.5),-3.5,3.5)
-        p_y = np.clip(self.goal_position[1] + np.random.uniform(-0.5, 0.5),-3.5,3.5)
-        p_z = np.clip(self.goal_position[2] + np.random.uniform(-0.5, 0.5),0.5, 2.2)
+        # p_x = np.clip(self.goal_position[0] + np.random.uniform(-0.5, 0.5),-3.5,3.5)
+        # p_y = np.clip(self.goal_position[1] + np.random.uniform(-0.5, 0.5),-3.5,3.5)
+        # p_z = np.clip(self.goal_position[2] + np.random.uniform(-0.5, 0.5),0.5, 2.2)
+        p_x = 0
+        p_y = 0
+        p_z = 1.2
         self.get_logger().info("New goal: {:.1f}, {:.1f}, {:.1f}".format(p_x, p_y, p_z))
         self.goal_position = np.array([p_x, p_y, p_z])
         self.target_publisher.publish(Float64MultiArray(data=self.goal_position))
@@ -43,6 +46,7 @@ class LQRController(TemplateController):
         yaw = euler_angles[2]
         near_hover_state = np.concatenate([state[0:6], np.array([yaw])])
         u = self.u_hover + self.gain_matrix @ (near_hover_state - np.concatenate((self.goal_position, np.zeros(4))))
+        # print(f"Distance to Goal: {np.linalg.norm(near_hover_state[0:3] - self.goal_position):.2f}")
         u[:2] = np.clip(u[:2], -0.2, 0.2)
         u[3] = np.clip(u[3], 4.0, 16.0)
         return u
