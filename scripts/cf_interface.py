@@ -7,6 +7,7 @@ from crazyflie_interfaces.srv import Takeoff, Land, NotifySetpointsStop
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from example_interfaces.msg import Float32MultiArray
+from crazyflie_interface.msg import StateStamped
 
 
 class CfInterface(Node):
@@ -35,11 +36,10 @@ class CfInterface(Node):
         self.backend = self.get_parameter("backend").value
         self.get_logger().info("Backend: {}".format(self.backend))
         if self.backend in ["cflib", "sim"]:
-            self.get_logger().info("Subscribing to cf231/odom")
             self.create_subscription(Odometry, 'cf231/odom', self.callback_state, 10)
         else: 
             raise NotImplementedError("Backend not yet supported")
-        self.state_publisher = self.create_publisher(Float32MultiArray, 'cf_interface/state', 10)
+        self.state_publisher = self.create_publisher(StateStamped, 'cf_interface/state', 10)
 
         # Control sub/pub
         self.create_subscription(Float32MultiArray, 'cf_interface/control', self.callback_control, 10)
@@ -111,7 +111,11 @@ class CfInterface(Node):
                              msg.pose.pose.orientation.w])
             omega = np.array([msg.twist.twist.angular.x, msg.twist.twist.angular.y, msg.twist.twist.angular.z])
             self.state = np.concatenate((pos, vel, quat, omega))
-            self.state_publisher.publish(Float32MultiArray(data=self.state))
+            timestamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            state_msg = StateStamped()
+            state_msg.time = timestamp
+            state_msg.data = self.state.tolist()
+            self.state_publisher.publish(state_msg)
         else:
             raise NotImplementedError("Message type not yet supported")
         
