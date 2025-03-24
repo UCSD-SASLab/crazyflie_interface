@@ -7,6 +7,7 @@ from crazyflie_interfaces.srv import Takeoff, Land, NotifySetpointsStop
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from example_interfaces.msg import Float32MultiArray
+from std_msgs.msg import Bool
 from crazyflie_interface.msg import StateStamped
 
 
@@ -20,6 +21,9 @@ class CfInterface(Node):
         self.takeoff_service.wait_for_service()
         self.land_service = self.create_client(Land, 'cf231/land')
         self.land_service.wait_for_service()
+        
+        self.state = None
+        self.time_init = None
 
         self.notify_setpointstop_service = self.create_client(NotifySetpointsStop, 'cf231/notify_setpoints_stop')
         self.notify_setpointstop_service.wait_for_service()
@@ -41,12 +45,20 @@ class CfInterface(Node):
             raise NotImplementedError("Backend not yet supported")
         self.state_publisher = self.create_publisher(StateStamped, 'cf_interface/state', 10)
 
+        self.flight_status_publisher = self.create_publisher(Bool, 'cf_interface/flight_status', 10)
+        self.flight_status_callback = self.create_timer(1.0, self.callback_flight_status)
+
         # Control sub/pub
         self.create_subscription(Float32MultiArray, 'cf_interface/control', self.callback_control, 10)
         if self.backend in ["cflib", "sim"]:
             self.low_level_controller_pub = self.create_publisher(Twist, 'cf231/cmd_vel_legacy', 10)
         else:
             raise NotImplementedError("Backend not yet supported")
+
+    def callback_flight_status(self):
+        flight_status_msg = Bool()
+        flight_status_msg.data = self.in_flight
+        self.flight_status_publisher.publish(flight_status_msg)
 
     def handle_command(self, request, response):
         """
@@ -100,11 +112,14 @@ class CfInterface(Node):
                 self.low_level_controller_pub.publish(self.zero_control_out_msg)
             self.destroy_timer(self.takeoff_timer)
         self.in_flight = not self.in_flight
+        self.callback_flight_status()
 
     def callback_state(self, msg):
         # Depends on the type of message received 
         # TODO: Check how it works to interface with pybullet_drones in ros?
         if isinstance(msg, Odometry):
+            if self.state is None:
+                self.time_init = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
             pos = np.array([msg.pose.pose.position.x, msg.pose.pose.position.y, msg.pose.pose.position.z])
             vel = np.array([msg.twist.twist.linear.x, msg.twist.twist.linear.y, msg.twist.twist.linear.z])
             quat = np.array([msg.pose.pose.orientation.x, msg.pose.pose.orientation.y, msg.pose.pose.orientation.z, 
@@ -113,8 +128,11 @@ class CfInterface(Node):
             self.state = np.concatenate((pos, vel, quat, omega))
             timestamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
             state_msg = StateStamped()
-            state_msg.time = timestamp
+
+            state_msg.time = timestamp - self.time_init
+
             state_msg.data = self.state.tolist()
+            
             self.state_publisher.publish(state_msg)
         else:
             raise NotImplementedError("Message type not yet supported")
