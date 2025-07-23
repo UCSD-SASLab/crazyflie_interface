@@ -23,6 +23,10 @@ def generate_launch_description():
             output='screen',
             parameters=[{'backend': LaunchConfiguration('backend')}]
         ),
+        Node(
+            package="rviz2-panel",
+            executable="button_command_node"
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource([
                 PathJoinSubstitution([

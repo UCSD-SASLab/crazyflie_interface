@@ -23,13 +23,13 @@ class LQRController(TemplateController):
         new_goal_frequency = 0.1
         # Timer for generating new goal
         self.goal_timer = self.create_timer(1.0 / new_goal_frequency, self.generate_random_goal)
-        self.goal_position = np.array([0.0, 0.0, 1.0])  # Initial goal
+        self.goal_position = np.array([1.5, 1.5, 1.0])  # Initial goal
         self.start_controller()
 
     def generate_random_goal(self):
-        p_x = np.random.uniform(-5.0, 5.0)
-        p_y = np.random.uniform(-2.5, 2.5)
-        p_z = np.random.uniform(0.5, 2.5)
+        p_x = np.random.uniform(-2.0, 2.0)
+        p_y = np.random.uniform(-2.0, 2.0)
+        p_z = np.random.uniform(0.5, 1.5)
         self.get_logger().info("New goal: {:.1f}, {:.1f}, {:.1f}".format(p_x, p_y, p_z))
         self.goal_position = np.array([p_x, p_y, p_z])
     

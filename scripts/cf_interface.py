@@ -117,6 +117,7 @@ class CfInterface(Node):
     def callback_state(self, msg):
         # Depends on the type of message received 
         # TODO: Check how it works to interface with pybullet_drones in ros?
+        # TODO Annie: for loop over all crazyflies
         if isinstance(msg, Odometry):
             if self.state is None:
                 self.time_init = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
