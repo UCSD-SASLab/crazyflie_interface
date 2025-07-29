@@ -18,6 +18,7 @@ ament_python_install_package(${PROJECT_NAME}_py)
 
 install(DIRECTORY
   launch
+  config
   DESTINATION share/${PROJECT_NAME})
 
 install(PROGRAMS

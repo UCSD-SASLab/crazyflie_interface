@@ -4,6 +4,8 @@ import numpy as np
 from rclpy.node import Node
 from example_interfaces.msg import Float32MultiArray
 from crazyflie_interface.msg import StateStamped
+# numpy logging only 2 digits
+np.set_printoptions(precision=2, suppress=True, floatmode='fixed')
 
 class TemplateController(Node):
     def __init__(self, node_name='template_controller', controller_rate=50.0):
@@ -24,6 +26,8 @@ class TemplateController(Node):
         self.create_timer(1.0 / self.controller_rate, self.publish_control)
     
     def callback_state(self, msg):
+        # only log every x seconds
+        # self.get_logger().info(f"Received state: {np.array(msg.data)}", throttle_duration_sec=0.1)
         self.state = np.array(msg.data)
 
     def __call__(self, state):

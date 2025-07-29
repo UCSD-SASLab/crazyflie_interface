@@ -9,24 +9,54 @@ from nav_msgs.msg import Odometry
 from example_interfaces.msg import Float32MultiArray
 from std_msgs.msg import Bool
 from crazyflie_interface.msg import StateStamped
+from functools import partial
+import yaml
+from ament_index_python.packages import get_package_share_directory
+import os
 
+
+MODE = "both"
 
 class CfInterface(Node):
     def __init__(self, node_name='cf_interface'):
         super().__init__(node_name)
+        # Add parameter for YAML config path
+        default_yaml_path = os.path.join(
+            get_package_share_directory('crazyflie_interface'),
+            'config',
+            'crazyflies.yaml'
+        )
+        self.declare_parameter("robot_yaml_path", default_yaml_path)
+        yaml_path = self.get_parameter("robot_yaml_path").value
+
+        # Load robot list from YAML
+        try:
+            with open(yaml_path, 'r') as f:
+                config = yaml.safe_load(f)
+            robots = config.get('robots', {})
+            self.crazyflie_names = [name for name, data in robots.items() if data.get('enabled', False)]
+            self.get_logger().info(f"Loaded robots: {self.crazyflie_names}")
+        except Exception as e:
+            self.get_logger().error(f"Failed to load robot YAML: {e}")
+            self.crazyflie_names = []
         # Create high level command interface for taking off, landing and calibrating
         self.create_service(Command, 'cf_interface/command', self.handle_command)
         self.in_flight = False
-        self.takeoff_service = self.create_client(Takeoff, 'cf231/takeoff')
+        self.takeoff_service = self.create_client(Takeoff, 'all/takeoff')
         self.takeoff_service.wait_for_service()
-        self.land_service = self.create_client(Land, 'cf231/land')
+        self.land_service = self.create_client(Land, 'all/land')
         self.land_service.wait_for_service()
-        
-        self.state = None
+        self.get_logger().info(f"Created takeoff and land services for {self.crazyflie_names}")
+        self.state = [None for _ in self.crazyflie_names]
         self.time_init = None
-
-        self.notify_setpointstop_service = self.create_client(NotifySetpointsStop, 'cf231/notify_setpoints_stop')
-        self.notify_setpointstop_service.wait_for_service()
+        self.uris = [4, 5]#
+        # self.uris = [4]
+        # Create separate service for each robot
+        self.notify_setpointstop_services = {}
+        for name in self.crazyflie_names:
+            self.notify_setpointstop_services[name] = self.create_client(NotifySetpointsStop, f"{name}/notify_setpoints_stop")
+            self.notify_setpointstop_services[name].wait_for_service()
+            self.get_logger().info(f"Created notify_setpoints_stop service for {name}")
 
         self.zero_control_out_msg = Twist()
         self.zero_control_out_msg.linear.x = 0.0
@@ -35,25 +65,36 @@ class CfInterface(Node):
         self.zero_control_out_msg.angular.z = 0.0
 
         # State sub/pub
+        self.get_logger().info(f"Setting up state publisher for {self.crazyflie_names}")
         # get backend from parameter server
         self.declare_parameter("backend", rclpy.Parameter.Type.STRING)
         self.backend = self.get_parameter("backend").value
         self.get_logger().info("Backend: {}".format(self.backend))
         if self.backend in ["cflib", "sim"]:
-            self.create_subscription(Odometry, 'cf231/odom', self.callback_state, 10)
+            for i, cf_name in enumerate(self.crazyflie_names):
+                uri = self.uris[i]
+                self.create_subscription(Odometry, f"{cf_name}/odom", partial(self.callback_state, uri=uri), 10)
         else: 
             raise NotImplementedError("Backend not yet supported")
         self.state_publisher = self.create_publisher(StateStamped, 'cf_interface/state', 10)
-
+        self.state_publisher_timer = self.create_timer(0.0001, self.state_publisher_callback)
         self.flight_status_publisher = self.create_publisher(Bool, 'cf_interface/flight_status', 10)
         self.flight_status_callback = self.create_timer(1.0, self.callback_flight_status)
 
         # Control sub/pub
-        self.create_subscription(Float32MultiArray, 'cf_interface/control', self.callback_control, 10)
         if self.backend in ["cflib", "sim"]:
-            self.low_level_controller_pub = self.create_publisher(Twist, 'cf231/cmd_vel_legacy', 10)
+            self.cmd_vel_publishers = {}
+            self.get_logger().info(f"Setting up cmd_vel publishers for: {self.crazyflie_names}")
+            for name in self.crazyflie_names:
+                self.cmd_vel_publishers[name] = self.create_publisher(
+                    Twist, f"{name}/cmd_vel_legacy", 10
+                )
+                # TODO: Add an else option for cmd_full_state and create its associated publisher
         else:
             raise NotImplementedError("Backend not yet supported")
+        self.create_subscription(Float32MultiArray, 'cf_interface/control', self.callback_control, 10)
+
+        self.create_timer(1.0 / 50.0, self.callback_control_full_state)  
 
     def callback_flight_status(self):
         flight_status_msg = Bool()
@@ -87,7 +128,8 @@ class CfInterface(Node):
                 req = NotifySetpointsStop.Request()
                 req.group_mask = 0 
                 req.remain_valid_millisecs = 10
-                self.notify_setpointstop_service.call_async(req)
+                
+                self.notify_setpointstop_services.call_async(req)
                 # 3. Send land command (twice to ensure it is not missed)
                 req = Land.Request()
                 req.group_mask = 0
@@ -109,48 +151,100 @@ class CfInterface(Node):
         if not self.in_flight:
             # Initialize low level controller
             for _ in range(5):
-                self.low_level_controller_pub.publish(self.zero_control_out_msg)
+                for i, name in enumerate(self.crazyflie_names):
+                    self.cmd_vel_publishers[name].publish(self.zero_control_out_msg)
             self.destroy_timer(self.takeoff_timer)
         self.in_flight = not self.in_flight
         self.callback_flight_status()
 
-    def callback_state(self, msg):
+    def callback_state(self, msg, uri):
         # Depends on the type of message received 
         # TODO: Check how it works to interface with pybullet_drones in ros?
         # TODO Annie: for loop over all crazyflies
         if isinstance(msg, Odometry):
-            if self.state is None:
+            # On first message from any robot, set time_init
+            if all(s is None for s in self.state):  # only at first time point
                 self.time_init = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+
             pos = np.array([msg.pose.pose.position.x, msg.pose.pose.position.y, msg.pose.pose.position.z])
             vel = np.array([msg.twist.twist.linear.x, msg.twist.twist.linear.y, msg.twist.twist.linear.z])
             quat = np.array([msg.pose.pose.orientation.x, msg.pose.pose.orientation.y, msg.pose.pose.orientation.z, 
                              msg.pose.pose.orientation.w])
             omega = np.array([msg.twist.twist.angular.x, msg.twist.twist.angular.y, msg.twist.twist.angular.z])
-            self.state = np.concatenate((pos, vel, quat, omega))
-            timestamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-            state_msg = StateStamped()
-
-            state_msg.time = timestamp - self.time_init
-
-            state_msg.data = self.state.tolist()
             
-            self.state_publisher.publish(state_msg)
+            # edit? Print out state for debugging
+            #self.get_logger().info(f"State for {uri} - Pos: {pos}, Vel: {vel}, Quat: {quat}, Omega: {omega}")
+
+            
+            # For the uri need the index of the crazyflie
+            if uri not in self.uris:
+                self.get_logger().error("URI {} not found in uris list".format(uri))
+                return
+            # Find index of uri in self.uris
+            index = self.uris.index(uri)
+            self.state[index] = np.concatenate((pos, vel, quat, omega))
+            self.timestamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            
         else:
             raise NotImplementedError("Message type not yet supported")
-        
+    
+    def state_publisher_callback(self):
+        # If any state is None, return
+        if any(s is None for s in self.state):
+            return
+        # self.get_logger().info(f"state:" f"{np.array(self.state).flatten()}", throttle_duration_sec=0.1)
+        state_msg = StateStamped()
+        # Turn list into flattened array
+        state = np.array(self.state).flatten()
+        state_msg.data = state.tolist()
+        state_msg.time = self.timestamp - self.time_init
+        self.state_publisher.publish(state_msg)
+
+    def callback_control_full_state(self):
+        pass
+    # This function sends an Odom message to the crazyflies with a fixed state (position x y z) for each drone
+
     def callback_control(self, msg):
-        assert isinstance(msg, Float32MultiArray) and len(msg.data) == 4
-        # Convert to units for the drone
+        num_robots = len(self.crazyflie_names)
+        assert len(msg.data) == 4 * num_robots
         if not self.in_flight:
             return
-        control = self.convert_and_clip_control(np.array(msg.data))
-        # Publish control
-        control_msg = Twist()
-        control_msg.linear.y = float(control[0])
-        control_msg.linear.x = float(control[1])
-        control_msg.angular.z = float(control[2])
-        control_msg.linear.z = float(control[3])
-        self.low_level_controller_pub.publish(control_msg)
+        if MODE == "both":
+            for i, name in enumerate(self.crazyflie_names):
+                control = np.array(msg.data[4*i:4*(i+1)])
+                control = self.convert_and_clip_control(control)
+                control_msg = Twist()
+                control_msg.linear.y = float(control[0])
+                control_msg.linear.x = float(control[1])
+                control_msg.angular.z = float(control[2])
+                control_msg.linear.z = float(control[3])
+                # self.get_logger().info(f"Publishing control for {name}: {control_msg}", throttle_duration_sec=0.1)
+                self.cmd_vel_publishers[name].publish(control_msg)
+        elif MODE == "1only":
+            control = np.array(msg.data)  # nbr_robots*m 
+            control = control[:4]  # Only take first 4 values (only robot 0)
+            control = self.convert_and_clip_control(control)
+            control_msg = Twist()
+            control_msg.linear.y = float(control[0])
+            control_msg.linear.x = float(control[1])
+            control_msg.angular.z = float(control[2])
+            control_msg.linear.z = float(control[3])
+            # self.get_logger().info(f"Publishing control for robot 0: {control_msg}", throttle_duration_sec=0.1)
+            self.cmd_vel_publishers[self.crazyflie_names[0]].publish(control_msg)
+        elif MODE == "2only":
+            control = np.array(msg.data)
+            control = control[4:]  # Only take last 4 values (only robot 1)
+            control = self.convert_and_clip_control(control)
+            control_msg = Twist()
+            control_msg.linear.y = float(control[0])
+            control_msg.linear.x = float(control[1])
+            control_msg.angular.z = float(control[2])
+            control_msg.linear.z = float(control[3])
+            # self.get_logger().info(f"Publishing control for robot 1: {control_msg}", throttle_duration_sec=0.1)
+            self.cmd_vel_publishers[self.crazyflie_names[1]].publish(control_msg)
+        else:
+            raise NotImplementedError("Mode not yet supported: {}".format(MODE))
+
 
     def convert_and_clip_control(self, control_model):
         # Convert control model to drone control
