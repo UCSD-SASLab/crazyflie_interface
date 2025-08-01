@@ -4,6 +4,7 @@ import numpy as np
 from rclpy.node import Node
 from crazyflie_interface.srv import Command
 from crazyflie_interfaces.srv import Takeoff, Land, NotifySetpointsStop
+from crazyflie_interfaces.msg import FullState
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from example_interfaces.msg import Float32MultiArray
@@ -14,8 +15,8 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 import os
 
-
-MODE = "both"
+MODE = "2zeros"
+CONTROL_MODE = "control"   # "full_state" or "control"
 
 class CfInterface(Node):
     def __init__(self, node_name='cf_interface'):
@@ -73,28 +74,41 @@ class CfInterface(Node):
         if self.backend in ["cflib", "sim"]:
             for i, cf_name in enumerate(self.crazyflie_names):
                 uri = self.uris[i]
-                self.create_subscription(Odometry, f"{cf_name}/odom", partial(self.callback_state, uri=uri), 10)
+                self.create_subscription(Odometry, f"{cf_name}/odom", partial(self.callback_state, uri=uri), 1)
         else: 
             raise NotImplementedError("Backend not yet supported")
-        self.state_publisher = self.create_publisher(StateStamped, 'cf_interface/state', 10)
-        self.state_publisher_timer = self.create_timer(0.0001, self.state_publisher_callback)
-        self.flight_status_publisher = self.create_publisher(Bool, 'cf_interface/flight_status', 10)
+        self.state_publisher = self.create_publisher(StateStamped, 'cf_interface/state', 1)
+        self.state_publisher_timer = self.create_timer(0.01, self.state_publisher_callback)
+        self.flight_status_publisher = self.create_publisher(Bool, 'cf_interface/flight_status', 1)
         self.flight_status_callback = self.create_timer(1.0, self.callback_flight_status)
 
         # Control sub/pub
         if self.backend in ["cflib", "sim"]:
-            self.cmd_vel_publishers = {}
-            self.get_logger().info(f"Setting up cmd_vel publishers for: {self.crazyflie_names}")
-            for name in self.crazyflie_names:
-                self.cmd_vel_publishers[name] = self.create_publisher(
-                    Twist, f"{name}/cmd_vel_legacy", 10
-                )
-                # TODO: Add an else option for cmd_full_state and create its associated publisher
+            if CONTROL_MODE == "control":
+                self.cmd_vel_publishers = {}
+                self.get_logger().info(f"Setting up cmd_vel publishers for: {self.crazyflie_names}")
+                for name in self.crazyflie_names:
+                    self.cmd_vel_publishers[name] = self.create_publisher(
+                        Twist, f"{name}/cmd_vel_legacy", 1
+                    )
+                    # TODO: Add an else option for cmd_full_state and create its associated publisher
+            elif CONTROL_MODE == "full_state":
+                self.cmd_full_state_publishers = {}
+                self.get_logger().info(f"Setting up cmd_full_state publishers for: {self.crazyflie_names}")
+                for name in self.crazyflie_names:
+                    self.cmd_full_state_publishers[name] = self.create_publisher(
+                        FullState, f"{name}/cmd_full_state", 1
+                    )
         else:
             raise NotImplementedError("Backend not yet supported")
-        self.create_subscription(Float32MultiArray, 'cf_interface/control', self.callback_control, 10)
+        
+        if CONTROL_MODE == "control":
+            self.create_subscription(Float32MultiArray, 'cf_interface/control', self.callback_control, 1)
+        elif CONTROL_MODE == "full_state":
+            self.create_timer(1.0 / 50.0, self.callback_control_full_state)  
+        else:
+            raise NotImplementedError("Control mode not yet supported")
 
-        self.create_timer(1.0 / 50.0, self.callback_control_full_state)  
 
     def callback_flight_status(self):
         flight_status_msg = Bool()
@@ -150,9 +164,10 @@ class CfInterface(Node):
     def toggle_in_flight(self):
         if not self.in_flight:
             # Initialize low level controller
-            for _ in range(5):
-                for i, name in enumerate(self.crazyflie_names):
-                    self.cmd_vel_publishers[name].publish(self.zero_control_out_msg)
+            if CONTROL_MODE == "control":
+                for _ in range(5):
+                    for i, name in enumerate(self.crazyflie_names):
+                        self.cmd_vel_publishers[name].publish(self.zero_control_out_msg)
             self.destroy_timer(self.takeoff_timer)
         self.in_flight = not self.in_flight
         self.callback_flight_status()
@@ -200,9 +215,20 @@ class CfInterface(Node):
         state_msg.time = self.timestamp - self.time_init
         self.state_publisher.publish(state_msg)
 
-    def callback_control_full_state(self):
-        pass
     # This function sends an Odom message to the crazyflies with a fixed state (position x y z) for each drone
+    def callback_control_full_state(self):
+        if not self.in_flight:
+            return
+        for i, name in enumerate(self.crazyflie_names):
+            ctrl_msg = FullState()
+            ctrl_msg.pose.position.x = 0.0
+            ctrl_msg.pose.position.y = 0.0
+            ctrl_msg.pose.position.z = 2.0
+            ctrl_msg.pose.orientation.x = 0.0
+            ctrl_msg.pose.orientation.y = 0.0
+            ctrl_msg.pose.orientation.z = 0.0
+            self.cmd_full_state_publishers[name].publish(ctrl_msg)
+
 
     def callback_control(self, msg):
         num_robots = len(self.crazyflie_names)
@@ -242,9 +268,20 @@ class CfInterface(Node):
             control_msg.linear.z = float(control[3])
             # self.get_logger().info(f"Publishing control for robot 1: {control_msg}", throttle_duration_sec=0.1)
             self.cmd_vel_publishers[self.crazyflie_names[1]].publish(control_msg)
+        elif MODE == "2zeros":
+            control = np.array(msg.data)
+            control = control[:4] # Only take first 4 values (only robot 0)
+            control = self.convert_and_clip_control(control)
+            control_msg = Twist()
+            control_msg.linear.y = float(control[0])
+            control_msg.linear.x = float(control[1])
+            control_msg.angular.z = float(control[2])
+            control_msg.linear.z = float(control[3])
+            self.cmd_vel_publishers[self.crazyflie_names[0]].publish(control_msg)
+            zero_control_msg = Twist()
+            self.cmd_vel_publishers[self.crazyflie_names[1]].publish(zero_control_msg)
         else:
             raise NotImplementedError("Mode not yet supported: {}".format(MODE))
-
 
     def convert_and_clip_control(self, control_model):
         # Convert control model to drone control
