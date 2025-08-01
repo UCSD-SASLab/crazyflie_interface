@@ -15,7 +15,7 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 import os
 
-MODE = "2zeros"
+MODE = "both"
 CONTROL_MODE = "control"   # "full_state" or "control"
 
 class CfInterface(Node):

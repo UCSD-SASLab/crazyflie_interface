@@ -24,7 +24,7 @@ class LQRController(TemplateController):
 
         self.u_hover = np.array([0.0, 0.0, 0.0, 11.95])
 
-        new_goal_frequency = 0.001
+        new_goal_frequency = 0.1
         # Timer for generating new goal
         self.goal_timer = self.create_timer(1.0 / new_goal_frequency, self.generate_random_goal)
         #edit? one drone 
@@ -37,16 +37,9 @@ class LQRController(TemplateController):
         p_x = np.random.uniform(-2.0, 2.0, 2)
         p_y = np.random.uniform(-2.0, 2.0, 2)
         p_z = np.random.uniform(0.5, 1.5, 2)
-        #edit?
-        # self.get_logger().info("New goal: {:.1f}, {:.1f}, {:.1f}".format(p_x, p_y, p_z))
 
-        # for two drones 
-        # self.goal_position = np.stack([
-        #     np.random.uniform([-2, -2, 0.5], [2, 2, 1.5]),
-        #     np.random.uniform([-2, -2, 0.5], [2, 2, 1.5])
-        # ])
+        self.goal_position = np.column_stack([p_x, p_y, p_z])
         self.get_logger().info(f"New goals: {self.goal_position}")
-        #self.goal_position = np.array([[p_x, p_y, p_z], [p_x, p_y, p_z]])
     
     # debug hover - temporary
     def __call__(self, state):

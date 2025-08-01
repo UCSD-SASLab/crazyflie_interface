@@ -1,29 +1,40 @@
 # named list of all robots
 robots:
-  cf231:
+  cf_1:
+      enabled: true
+      uri: udp://0.0.0.0:19850
+      initial_position: [0.0, 0.0, 0.0]
+      type: cf_sim
+
+  cf_2:
     enabled: true
-    uri: radio://0/80/2M/E7E7E7E7E1
-    initial_position: [-4.5, 0.0, 0.]
-    # initial_position: [0., 0.3, 0.0]
-    type: cf21_single_PID  # see robot_types
-    # firmware_params:
-    #   kalman:
-    #     pNAcc_xy: 1.0 # default 0.5
-    # firmware_logging:
-    #   enabled: true
-    #   custom_topics:
-    #     topic_name3: 
-    #       frequency: 1
-    #       vars: ["acc.x", "acc.y"]
-  cf232:
-    enabled: true
-    uri: radio://0/80/2M/E7E7E7E7E2
-    initial_position: [-1.5, 0.0, 0.]
-    # initial_position: [0., 0.3, 0.0]
-    type: cf21_single_PID  # see robot_types
+    uri: udp://0.0.0.0:19851
+    initial_position: [1.0, 4.0, 0.0]
+    type: cf_sim
+
+  # cf_3:
+  #   enabled: false
+  #   uri: udp://0.0.0.0:19852
+  #   initial_position: [0.0, 1.0, 0.0]
+  #   type: cf_sim 
+
+  # cf_4:
+  #   enabled: false
+  #   uri: udp://0.0.0.0:19853
+  #   initial_position: [1.0, 0.0, 0.0]
+  #   type: cf_sim
 
 # Definition of the various robot types
 robot_types:
+  cf_sim:
+    motion_capture:
+      enabled: false
+    big_quad: false
+    firmware_logging:
+      enabled: true
+      default_topics:
+        pose:
+          frequency: 10
   cf21_single:
     motion_capture:
       enabled: true
