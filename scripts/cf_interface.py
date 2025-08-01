@@ -4,6 +4,7 @@ import numpy as np
 from rclpy.node import Node
 from crazyflie_interface.srv import Command
 from crazyflie_interfaces.srv import Takeoff, Land, NotifySetpointsStop
+from crazyflie_interfaces.srv import Arm
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from example_interfaces.msg import Float32MultiArray
@@ -54,6 +55,14 @@ class CfInterface(Node):
             self.low_level_controller_pub = self.create_publisher(Twist, 'cf231/cmd_vel_legacy', 10)
         else:
             raise NotImplementedError("Backend not yet supported")
+        
+        # Arm device if needed
+        self.arm_service = self.create_client(Arm, 'cf231/arm')
+        req = Arm.Request()
+        req.arm = True
+        self.arm_service.wait_for_service()
+        self.arm_service.call_async(req)
+        self.get_logger().info("Arming Crazyflie")
 
     def callback_flight_status(self):
         flight_status_msg = Bool()
