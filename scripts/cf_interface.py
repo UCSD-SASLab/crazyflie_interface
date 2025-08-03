@@ -4,6 +4,7 @@ import numpy as np
 from rclpy.node import Node
 from crazyflie_interface.srv import Command
 from crazyflie_interfaces.srv import Takeoff, Land, NotifySetpointsStop
+from crazyflie_interfaces.srv import Arm
 from crazyflie_interfaces.msg import FullState
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
@@ -11,9 +12,7 @@ from example_interfaces.msg import Float32MultiArray
 from std_msgs.msg import Bool
 from crazyflie_interface.msg import StateStamped
 from functools import partial
-import yaml
-from ament_index_python.packages import get_package_share_directory
-import os
+
 
 MODE = "both"
 CONTROL_MODE = "control"   # "full_state" or "control"
@@ -89,7 +88,12 @@ class CfInterface(Node):
                     )
         else:
             raise NotImplementedError("Backend not yet supported")
-        
+        self.arm_service = self.create_client(Arm, 'all/arm')
+        req = Arm.Request()
+        req.arm = True
+        self.arm_service.wait_for_service()
+        self.arm_service.call_async(req)
+        self.get_logger().info("Arming Crazyflie")        
         if CONTROL_MODE == "control":
             self.create_subscription(Float32MultiArray, 'cf_interface/control', self.callback_control, 1)
         elif CONTROL_MODE == "full_state":
