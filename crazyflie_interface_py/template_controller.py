@@ -8,8 +8,8 @@ from crazyflie_interface.msg import StateStamped
 np.set_printoptions(precision=2, suppress=True, floatmode='fixed')
 
 class TemplateController(Node):
-    def __init__(self, node_name='template_controller', controller_rate=50.0):
-        super().__init__(node_name)
+    def __init__(self, node_name='template_controller', controller_rate=50.0, allow_undeclared_parameters=False, automatically_declare_parameters_from_overrides=False):
+        super().__init__(node_name, allow_undeclared_parameters=allow_undeclared_parameters, automatically_declare_parameters_from_overrides=automatically_declare_parameters_from_overrides)
         self.controller_rate = controller_rate
         # Subclasses should call start_controller() at the end of their __init__ method
         self.state = None

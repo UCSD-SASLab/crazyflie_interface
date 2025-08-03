@@ -20,43 +20,31 @@ CONTROL_MODE = "control"   # "full_state" or "control"
 
 class CfInterface(Node):
     def __init__(self, node_name='cf_interface'):
-        super().__init__(node_name)
+        super().__init__(node_name, allow_undeclared_parameters=True, automatically_declare_parameters_from_overrides=True)
         # Add parameter for YAML config path
-        default_yaml_path = os.path.join(
-            get_package_share_directory('crazyflie_interface'),
-            'config',
-            'crazyflies.yaml'
-        )
-        self.declare_parameter("robot_yaml_path", default_yaml_path)
-        yaml_path = self.get_parameter("robot_yaml_path").value
+        self._ros_parameters = self._param_to_dict(self._parameters)
 
-        # Load robot list from YAML
-        try:
-            with open(yaml_path, 'r') as f:
-                config = yaml.safe_load(f)
-            robots = config.get('robots', {})
-            self.crazyflie_names = [name for name, data in robots.items() if data.get('enabled', False)]
-            self.get_logger().info(f"Loaded robots: {self.crazyflie_names}")
-        except Exception as e:
-            self.get_logger().error(f"Failed to load robot YAML: {e}")
-            self.crazyflie_names = []
+        robots = self._ros_parameters.get('robots', {})    
+        self.crazyflie_names = [name for name, data in robots.items() if data.get('enabled', False)]
+        self.uris = [data.get('uri') for name, data in robots.items() if data.get('enabled', False)]
+        self.get_logger().info(f"Loaded robots: {self.crazyflie_names}")
         # Create high level command interface for taking off, landing and calibrating
         self.create_service(Command, 'cf_interface/command', self.handle_command)
         self.in_flight = False
         self.takeoff_service = self.create_client(Takeoff, 'all/takeoff')
-        self.takeoff_service.wait_for_service()
+        # self.takeoff_service.wait_for_service()
         self.land_service = self.create_client(Land, 'all/land')
-        self.land_service.wait_for_service()
+        # self.land_service.wait_for_service()
         self.get_logger().info(f"Created takeoff and land services for {self.crazyflie_names}")
         self.state = [None for _ in self.crazyflie_names]
         self.time_init = None
-        self.uris = [4, 5]#
+        self.get_logger().info(f"URIs: {self.uris}")
         # self.uris = [4]
         # Create separate service for each robot
         self.notify_setpointstop_services = {}
         for name in self.crazyflie_names:
             self.notify_setpointstop_services[name] = self.create_client(NotifySetpointsStop, f"{name}/notify_setpoints_stop")
-            self.notify_setpointstop_services[name].wait_for_service()
+            # self.notify_setpointstop_services[name].wait_for_service()
             self.get_logger().info(f"Created notify_setpoints_stop service for {name}")
 
         self.zero_control_out_msg = Twist()
@@ -68,17 +56,16 @@ class CfInterface(Node):
         # State sub/pub
         self.get_logger().info(f"Setting up state publisher for {self.crazyflie_names}")
         # get backend from parameter server
-        self.declare_parameter("backend", rclpy.Parameter.Type.STRING)
-        self.backend = self.get_parameter("backend").value
+        self.backend = self._ros_parameters['backend']
         self.get_logger().info("Backend: {}".format(self.backend))
         if self.backend in ["cflib", "sim"]:
             for i, cf_name in enumerate(self.crazyflie_names):
                 uri = self.uris[i]
+                self.get_logger().info(f"Creating subscription for {cf_name} with uri {uri}")
                 self.create_subscription(Odometry, f"{cf_name}/odom", partial(self.callback_state, uri=uri), 1)
         else: 
             raise NotImplementedError("Backend not yet supported")
         self.state_publisher = self.create_publisher(StateStamped, 'cf_interface/state', 1)
-        self.state_publisher_timer = self.create_timer(0.01, self.state_publisher_callback)
         self.flight_status_publisher = self.create_publisher(Bool, 'cf_interface/flight_status', 1)
         self.flight_status_callback = self.create_timer(1.0, self.callback_flight_status)
 
@@ -91,6 +78,7 @@ class CfInterface(Node):
                     self.cmd_vel_publishers[name] = self.create_publisher(
                         Twist, f"{name}/cmd_vel_legacy", 1
                     )
+                    self.get_logger().info(f"Created cmd_vel publisher for {name}")
                     # TODO: Add an else option for cmd_full_state and create its associated publisher
             elif CONTROL_MODE == "full_state":
                 self.cmd_full_state_publishers = {}
@@ -108,7 +96,24 @@ class CfInterface(Node):
             self.create_timer(1.0 / 50.0, self.callback_control_full_state)  
         else:
             raise NotImplementedError("Control mode not yet supported")
+        self.get_logger().info(f"Control mode: {CONTROL_MODE}")
+        self.state_is_publishing = False
+        self.state_publisher_timer = self.create_timer(0.01, self.state_publisher_callback)
 
+
+    def _param_to_dict(self, param_ros):
+        """
+        Turn ROS 2 parameters from the node into a dict
+        """
+        tree = {}
+        for item in param_ros:
+            t = tree
+            for part in item.split('.'):
+                if part == item.split('.')[-1]:
+                    t = t.setdefault(part, param_ros[item].value)
+                else:
+                    t = t.setdefault(part, {})
+        return tree
 
     def callback_flight_status(self):
         flight_status_msg = Bool()
@@ -129,7 +134,7 @@ class CfInterface(Node):
                 req.height = 0.5
                 req.duration = rclpy.duration.Duration(seconds=2.0).to_msg()
                 self.takeoff_service.call_async(req)
-                self.takeoff_timer = self.create_timer(5.0, self.toggle_in_flight)
+                self.takeoff_timer = self.create_timer(5.0, self.toggle_post_takeoff)
                 response.success = True
         elif request.command == "land":
             if not self.in_flight:
@@ -137,7 +142,7 @@ class CfInterface(Node):
                 response.message = "Not in flight"
             else:
                 # 1. Stop sending low level control commands
-                self.toggle_in_flight()
+                self.toggle_to_land()
                 # 2. Inform drone of no more low level commands
                 req = NotifySetpointsStop.Request()
                 req.group_mask = 0 
@@ -161,15 +166,20 @@ class CfInterface(Node):
             response.message = "Unknown command, {}".format(request.command)
         return response
     
-    def toggle_in_flight(self):
+    def toggle_to_land(self):
+        self.in_flight = False
+        self.callback_flight_status()
+        self.get_logger().info(f"In flight: {self.in_flight}")
+
+    def toggle_post_takeoff(self):
         if not self.in_flight:
             # Initialize low level controller
             if CONTROL_MODE == "control":
-                for _ in range(5):
+                for _ in range(2):
                     for i, name in enumerate(self.crazyflie_names):
                         self.cmd_vel_publishers[name].publish(self.zero_control_out_msg)
             self.destroy_timer(self.takeoff_timer)
-        self.in_flight = not self.in_flight
+        self.in_flight = True
         self.callback_flight_status()
 
     def callback_state(self, msg, uri):
@@ -206,7 +216,12 @@ class CfInterface(Node):
     def state_publisher_callback(self):
         # If any state is None, return
         if any(s is None for s in self.state):
+            self.get_logger().info(f"State not yet initialized", throttle_duration_sec=1.0)
             return
+        if not self.state_is_publishing:
+            self.get_logger().info(f"Started publishing state")
+            self.state_is_publishing = True
+        
         # self.get_logger().info(f"state:" f"{np.array(self.state).flatten()}", throttle_duration_sec=0.1)
         state_msg = StateStamped()
         # Turn list into flattened array
@@ -238,12 +253,14 @@ class CfInterface(Node):
         if MODE == "both":
             for i, name in enumerate(self.crazyflie_names):
                 control = np.array(msg.data[4*i:4*(i+1)])
+                # self.get_logger().info(f"Control for {name}: {control}")
                 control = self.convert_and_clip_control(control)
                 control_msg = Twist()
                 control_msg.linear.y = float(control[0])
                 control_msg.linear.x = float(control[1])
                 control_msg.angular.z = float(control[2])
                 control_msg.linear.z = float(control[3])
+                # self.get_logger().info(f"Publishing control for {name}: {control_msg}")
                 # self.get_logger().info(f"Publishing control for {name}: {control_msg}", throttle_duration_sec=0.1)
                 self.cmd_vel_publishers[name].publish(control_msg)
         elif MODE == "1only":

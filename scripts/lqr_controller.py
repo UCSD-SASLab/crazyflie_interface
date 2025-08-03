@@ -7,11 +7,15 @@ from crazyflie_interface_py.template_controller import TemplateController
 np.set_printoptions(precision=2, suppress=True, floatmode='fixed')
 
 MODE = "lqr" #"2repeats1", # "hover"  # "1repeats2"  # "2repeats1"  # "hover"
-nbr_robots = 2  # FIXME: forces fixed number of robots robots -> become more generic
 
 class LQRController(TemplateController):
     def __init__(self, node_name='lqr_controller'):
-        super().__init__(node_name)
+        super().__init__(node_name, allow_undeclared_parameters=True, automatically_declare_parameters_from_overrides=True)
+        self._ros_parameters = self._param_to_dict(self._parameters)
+        robots = self._ros_parameters.get('robots', {})
+        self.get_logger().info(f"Robots: {robots}")
+        self.nbr_robots = len(robots)
+        self.get_logger().info(f"Number of robots: {self.nbr_robots}")
         gain_matrix = np.zeros((4, 7))
         gain_matrix[0, 1] = 0.2  # y -> roll
         gain_matrix[0, 4] = 0.2  # v_y -> roll
@@ -34,17 +38,31 @@ class LQRController(TemplateController):
         self.start_controller()
 
     def generate_random_goal(self):
-        p_x = np.random.uniform(-2.0, 2.0, 2)
-        p_y = np.random.uniform(-2.0, 2.0, 2)
-        p_z = np.random.uniform(0.5, 1.5, 2)
+        p_x = np.random.uniform(-2.0, 2.0, self.nbr_robots)
+        p_y = np.random.uniform(-2.0, 2.0, self.nbr_robots)
+        p_z = np.random.uniform(0.5, 1.5, self.nbr_robots)
 
         self.goal_position = np.column_stack([p_x, p_y, p_z])
         self.get_logger().info(f"New goals: {self.goal_position}")
-    
+
+    def _param_to_dict(self, param_ros):
+        """
+        Turn ROS 2 parameters from the node into a dict
+        """
+        tree = {}
+        for item in param_ros:
+            t = tree
+            for part in item.split('.'):
+                if part == item.split('.')[-1]:
+                    t = t.setdefault(part, param_ros[item].value)
+                else:
+                    t = t.setdefault(part, {})
+        return tree
+
     # debug hover - temporary
     def __call__(self, state):
-        states = np.array(state).reshape(nbr_robots, -1)
-        u = np.zeros((nbr_robots, 4))
+        states = np.array(state).reshape(self.nbr_robots, -1)
+        u = np.zeros((self.nbr_robots, 4))
         if MODE == "hover":
             u[:, 3] = self.u_hover[3]  # thrust
             # self.get_logger().info(f"Sending hover command: {hover_cmd}", throttle_duration_sec=0.5)
@@ -74,9 +92,6 @@ class LQRController(TemplateController):
 
         elif MODE == "lqr":
             for i, state in enumerate(states):
-                # self.get_logger().info(f"State for robot {i}: {state}", throttle_duration_sec=0.1)  # Log every second
-                # if i == 1:
-                #     break  # just have 0 control for the second robot (temporary)
                 euler_angles = rowan.to_euler(([state[9], state[6], state[7], state[8]]), "xyz")
                 yaw = euler_angles[2]
                 near_hover_state = np.concatenate([state[0:6], np.array([yaw])])
