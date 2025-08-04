@@ -15,7 +15,7 @@ from functools import partial
 
 
 MODE = "both"
-CONTROL_MODE = "control"   # "full_state" or "control"
+CONTROL_MODE = "full_state"   # "full_state" or "control"
 
 class CfInterface(Node):
     def __init__(self, node_name='cf_interface'):
@@ -97,7 +97,7 @@ class CfInterface(Node):
         if CONTROL_MODE == "control":
             self.create_subscription(Float32MultiArray, 'cf_interface/control', self.callback_control, 1)
         elif CONTROL_MODE == "full_state":
-            self.create_timer(1.0 / 50.0, self.callback_control_full_state)  
+            self.create_subscription(Float32MultiArray, 'cf_interface/control_full_state', self.callback_control_full_state, 1)
         else:
             raise NotImplementedError("Control mode not yet supported")
         self.get_logger().info(f"Control mode: {CONTROL_MODE}")
@@ -235,18 +235,32 @@ class CfInterface(Node):
         self.state_publisher.publish(state_msg)
 
     # This function sends an Odom message to the crazyflies with a fixed state (position x y z) for each drone
-    def callback_control_full_state(self):
+    def callback_control_full_state(self, msg):
         if not self.in_flight:
             return
         for i, name in enumerate(self.crazyflie_names):
+            control = np.array(msg.data[16*i:16*(i+1)])
             ctrl_msg = FullState()
-            ctrl_msg.pose.position.x = 0.0
-            ctrl_msg.pose.position.y = 0.0
-            ctrl_msg.pose.position.z = 2.0
-            ctrl_msg.pose.orientation.x = 0.0
-            ctrl_msg.pose.orientation.y = 0.0
-            ctrl_msg.pose.orientation.z = 0.0
+            ctrl_msg.pose.position.x = float(control[0])
+            ctrl_msg.pose.position.y = float(control[1])
+            ctrl_msg.pose.position.z = float(min(max(control[2], 0.2), 2.2))  # To be changed if desired
+            ctrl_msg.pose.orientation.x = float(control[6])
+            ctrl_msg.pose.orientation.y = float(control[7])
+            ctrl_msg.pose.orientation.z = float(control[8])
+            ctrl_msg.pose.orientation.w = float(control[9])
+            ctrl_msg.twist.linear.x = float(control[3])
+            ctrl_msg.twist.linear.y = float(control[4])
+            ctrl_msg.twist.linear.z = float(control[5])
+            ctrl_msg.twist.angular.x = float(control[10])
+            ctrl_msg.twist.angular.y = float(control[11])
+            ctrl_msg.twist.angular.z = float(control[12])
+            ctrl_msg.acc.x = float(control[13])
+            ctrl_msg.acc.y = float(control[14])
+            ctrl_msg.acc.z = float(control[15])
+
             self.cmd_full_state_publishers[name].publish(ctrl_msg)
+            # cmd_full_state: pose (3d position + quaternion orientation), velocity (3d linear + 3d angular), acceleration (3d linear)
+            # full control size: 16d (pos, vel, quat, omega, acc)
 
 
     def callback_control(self, msg):
