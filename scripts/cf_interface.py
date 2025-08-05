@@ -91,7 +91,7 @@ class CfInterface(Node):
         self.arm_service = self.create_client(Arm, 'all/arm')
         req = Arm.Request()
         req.arm = True
-        self.arm_service.wait_for_service()
+        #self.arm_service.wait_for_service()
         self.arm_service.call_async(req)
         self.get_logger().info("Arming Crazyflie")        
         if CONTROL_MODE == "control":
