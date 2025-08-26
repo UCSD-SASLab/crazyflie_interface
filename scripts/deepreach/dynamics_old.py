@@ -1640,8 +1640,8 @@ class DronePursuitEvasion12D(Dynamics):
         self.state_dim = 12
         self.control_dim = 3
         self.disturbance_dim = 3
-        self.input_multiplier = 14.0
-        self.sideways_multiplier = 2.0
+        self.input_multiplier = 16.0
+        self.sideways_multiplier = 2.5
         self.control_max = 1.0
         self.disturbance_max = 1.0
         self.Gz = -9.81
@@ -1653,11 +1653,11 @@ class DronePursuitEvasion12D(Dynamics):
             # Drone 1 (evader)
             [-4.5, 4.5], [-self.max_v, self.max_v],  # p1_x, v1_x
             [-2.5, 2.5], [-self.max_v, self.max_v],  # p1_y, v1_y
-            [-0.5, 2.2], [-self.max_v, self.max_v],  # p1_z, v1_z
+            [-0.5, 2.5], [-self.max_v, self.max_v],  # p1_z, v1_z
             # Drone 2 (pursuer)
             [-4.5, 4.5], [-self.max_v, self.max_v],  # p2_x, v2_x
             [-2.5, 2.5], [-self.max_v, self.max_v],  # p2_y, v2_y
-            [-0.5, 2.2], [-self.max_v, self.max_v],  # p2_z, v2_z
+            [-0.5, 2.5], [-self.max_v, self.max_v],  # p2_z, v2_z
         ])
         
         control_range_ = torch.tensor([
@@ -1675,7 +1675,7 @@ class DronePursuitEvasion12D(Dynamics):
         box_bounds_ = torch.tensor([
             [-4.0, 4.0], [-self.max_v, self.max_v],
             [-2.0, 2.0], [-self.max_v, self.max_v],
-            [0.0, 2.0],  [-self.max_v, self.max_v],
+            [0.0, 2.2],  [-self.max_v, self.max_v],
         ])
 
         state_mean_ = (state_range_[:, 0] + state_range_[:, 1]) / 2.0
@@ -1985,12 +1985,12 @@ class DronePursuitEvasion12DPure(Dynamics):
         self.state_dim = 12
         self.control_dim = 3
         self.disturbance_dim = 3
-        self.vertical_multiplier = 1.0
-        self.sideways_multiplier = 2.0
+        self.vertical_multiplier = 2.5
+        self.sideways_multiplier = 2.5
         self.control_max = 1.0
         self.disturbance_max = 1.0
         #self.Gz = -9.81
-        self.max_v = 2.0
+        self.max_v = 2.5
         self.capture_radius = collisionR  # Distance for capture
 
         # State: [p1_x, v1_x, p1_y, v1_y, p1_z, v1_z, p2_x, v2_x, p2_y, v2_y, p2_z, v2_z]
@@ -1998,11 +1998,11 @@ class DronePursuitEvasion12DPure(Dynamics):
             # Drone 1 (evader)
             [-4.5, 4.5], [-self.max_v, self.max_v],  # p1_x, v1_x
             [-2.5, 2.5], [-self.max_v, self.max_v],  # p1_y, v1_y
-            [-0.5, 2.2], [-self.max_v, self.max_v],  # p1_z, v1_z
+            [-0.5, 2.5], [-self.max_v, self.max_v],  # p1_z, v1_z
             # Drone 2 (pursuer)
             [-4.5, 4.5], [-self.max_v, self.max_v],  # p2_x, v2_x
             [-2.5, 2.5], [-self.max_v, self.max_v],  # p2_y, v2_y
-            [-0.5, 2.2], [-self.max_v, self.max_v],  # p2_z, v2_z
+            [-0.5, 2.5], [-self.max_v, self.max_v],  # p2_z, v2_z
         ])
         
         control_range_ = torch.tensor([
@@ -2020,7 +2020,7 @@ class DronePursuitEvasion12DPure(Dynamics):
         box_bounds_ = torch.tensor([
             [-4.0, 4.0], [-self.max_v, self.max_v],
             [-2.0, 2.0], [-self.max_v, self.max_v],
-            [0.0, 2.0],  [-self.max_v, self.max_v],
+            [0.0, 2.2],  [-self.max_v, self.max_v],
         ])
 
         state_mean_ = (state_range_[:, 0] + state_range_[:, 1]) / 2.0
@@ -3001,14 +3001,11 @@ class DronePursuitEvasion20D(Dynamics):
         self.capture_radius = capture_radius
 
         # Drone dynamics parameters
-        self.d0 = 20.0
-        self.d1 = 4.5
-        self.n0 = 18.0
-        self.k_T = 0.83
-        self.thrust_max = thrust_max
+        self.d0 = 10
+        self.d1 = 8
+        self.n0 = 10
+        self.k_T = thrust_max
         self.mass = 1.0
-        self.c_x = 0.3  # Drag coefficient for x direction
-        self.c_y = 0.3  # Drag coefficient for y direction
 
         # State: [x1, v1_x, θ1_x, ω1_x, y1, v1_y, θ1_y, ω1_y, z1, v1_z,  # Drone 1 (evader)
         #         x2, v2_x, θ2_x, ω2_x, y2, v2_y, θ2_y, ω2_y, z2, v2_z] # Drone 2 (pursuer)
@@ -3062,11 +3059,11 @@ class DronePursuitEvasion20D(Dynamics):
         self.control_range_ = control_range_.to(device)
         self.disturbance_range_ = disturbance_range_.to(device)
 
-        self.control_init = torch.tensor([0, 0, -self.Gz / self.thrust_max]).to(device)
-        self.disturbance_init = torch.tensor([0, 0, -self.Gz / self.thrust_max]).to(device)
+        self.control_init = torch.tensor([0, 0, -self.Gz / self.k_T]).to(device)
+        self.disturbance_init = torch.tensor([0, 0, -self.Gz / self.k_T]).to(device)
 
-        self.eps_var_control = torch.tensor([self.max_torque, self.max_torque, self.thrust_max]).to(device)  
-        self.eps_var_disturbance = torch.tensor([self.max_torque, self.max_torque, self.thrust_max]).to(device)  
+        self.eps_var_control = torch.tensor([self.max_torque, self.max_torque, self.k_T]).to(device)
+        self.eps_var_disturbance = torch.tensor([self.max_torque, self.max_torque, self.k_T]).to(device)
 
     def dsdt(self, state, control, disturbance):
         dsdt = torch.zeros_like(state)
@@ -3082,10 +3079,10 @@ class DronePursuitEvasion20D(Dynamics):
         dsdt[..., 4] = state[..., 5]  # y1_dot = v1_y
         dsdt[..., 8] = state[..., 9]  # z1_dot = v1_z
         
-        # Velocity derivatives (with evader control, disturbance, and drag terms)
-        dsdt[..., 1] = -self.Gz * torch.tan(state[..., 2]) - self.c_x * state[..., 1]  # v̇1_x = g * tan(θ1_x) - c_x * v1_x
-        dsdt[..., 5] = -self.Gz * torch.tan(state[..., 6]) - self.c_y * state[..., 5]  # v̇1_y = g * tan(θ1_y) - c_y * v1_y
-        dsdt[..., 9] = self.k_T / self.mass * self.thrust_max * control[..., 2] + self.Gz  # v1_z_dot = T1_z - g
+        # Velocity derivatives (with evader control)
+        dsdt[..., 1] = -self.Gz * torch.tan(state[..., 2])  # v̇1_x = g * tan(θ1_x)
+        dsdt[..., 5] = -self.Gz * torch.tan(state[..., 6])  # v̇1_y = g * tan(θ1_y)
+        dsdt[..., 9] = self.k_T / self.mass * control[..., 2] + self.Gz  # v1_z_dot = T1_z - g
         
         # Angle derivatives
         dsdt[..., 2] = state[..., 3] - self.d1 * state[..., 2]  # θ1_x_dot = ω1_x - d1 * θ1_x
@@ -3101,10 +3098,10 @@ class DronePursuitEvasion20D(Dynamics):
         dsdt[..., 14] = state[..., 15]  # y2_dot = v2_y
         dsdt[..., 18] = state[..., 19]  # z2_dot = v2_z
         
-        # Velocity derivatives (with pursuer control, disturbance, and drag terms)
-        dsdt[..., 11] = -self.Gz * torch.tan(state[..., 12]) - self.c_x * state[..., 11]  # v̇2_x = g * tan(θ2_x) - c_x * v2_x
-        dsdt[..., 15] = -self.Gz * torch.tan(state[..., 16]) - self.c_y * state[..., 15]  # v̇2_y = g * tan(θ2_y) - c_y * v2_y
-        dsdt[..., 19] = self.k_T / self.mass * self.thrust_max * disturbance[..., 2] + self.Gz  # v2_z_dot = T2_z - g
+        # Velocity derivatives (with pursuer control)
+        dsdt[..., 11] = -self.Gz * torch.tan(state[..., 12])  # v̇2_x = g * tan(θ2_x)
+        dsdt[..., 15] = -self.Gz * torch.tan(state[..., 16])  # v̇2_y = g * tan(θ2_y)
+        dsdt[..., 19] = self.k_T / self.mass * disturbance[..., 2] + self.Gz  # v2_z_dot = T2_z - g
         
         # Angle derivatives
         dsdt[..., 12] = state[..., 13] - self.d1 * state[..., 12]  # θ2_x_dot = ω2_x - d1 * θ2_x
@@ -3139,8 +3136,8 @@ class DronePursuitEvasion20D(Dynamics):
         
         # Drone 1 (evader) terms
         ham = (v1 * dVdp1).sum(-1)  # Position derivatives
-        ham += dVdv1[..., 0] * (-self.Gz * torch.tan(theta1[..., 0]) - self.c_x * v1[..., 0])  # v1_x term with drag
-        ham += dVdv1[..., 1] * (-self.Gz * torch.tan(theta1[..., 1]) - self.c_y * v1[..., 1])  # v1_y term with drag
+        ham += dVdv1[..., 0] * (-self.Gz * torch.tan(theta1[..., 0]))  # v1_x term
+        ham += dVdv1[..., 1] * (-self.Gz * torch.tan(theta1[..., 1]))  # v1_y term
         ham += dVdv1[..., 2] * self.Gz  # v1_z gravity term
         ham += (omega1 * dVdtheta1).sum(-1)  # Angle derivatives
         ham += dVdtheta1[..., 0] * (-self.d1 * theta1[..., 0])  # θ1_x damping
@@ -3150,8 +3147,8 @@ class DronePursuitEvasion20D(Dynamics):
         
         # Drone 2 (pursuer) terms
         ham += (v2 * dVdp2).sum(-1)  # Position derivatives
-        ham += dVdv2[..., 0] * (-self.Gz * torch.tan(theta2[..., 0]) - self.c_x * v2[..., 0])  # v2_x term with drag
-        ham += dVdv2[..., 1] * (-self.Gz * torch.tan(theta2[..., 1]) - self.c_y * v2[..., 1])  # v2_y term with drag
+        ham += dVdv2[..., 0] * (-self.Gz * torch.tan(theta2[..., 0]))  # v2_x term
+        ham += dVdv2[..., 1] * (-self.Gz * torch.tan(theta2[..., 1]))  # v2_y term
         ham += dVdv2[..., 2] * self.Gz  # v2_z gravity term
         ham += (omega2 * dVdtheta2).sum(-1)  # Angle derivatives
         ham += dVdtheta2[..., 0] * (-self.d1 * theta2[..., 0])  # θ2_x damping
@@ -3164,23 +3161,23 @@ class DronePursuitEvasion20D(Dynamics):
             # Evader tries to avoid capture (minimize value function)
             ham += self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega1[..., 0])  # S1_x
             ham += self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega1[..., 1])  # S1_y
-            ham += self.k_T / self.mass * self.thrust_max * torch.where(dVdv1[..., 2] > 0, self.control_max, 0.25) * torch.abs(dVdv1[..., 2])  # T1_z
+            ham += self.k_T / self.mass * torch.where(dVdv1[..., 2] >= 0, self.control_max, 0.25) * torch.abs(dVdv1[..., 2])  # T1_z
             
             # Pursuer tries to capture (maximize value function)
             ham -= self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega2[..., 0])  # S2_x
             ham -= self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega2[..., 1])  # S2_y
-            ham -= self.k_T / self.mass * self.thrust_max * torch.where(dVdv2[..., 2] < 0, self.control_max, 0.25) * torch.abs(dVdv2[..., 2])  # T2_z
+            ham -= self.k_T / self.mass * torch.where(dVdv2[..., 2] < 0, self.control_max, 0.25) * torch.abs(dVdv2[..., 2])  # T2_z
 
         elif self.set_mode == 'reach':
             # Evader tries to reach target (maximize value function)
             ham -= self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega1[..., 0])  # S1_x
             ham -= self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega1[..., 1])  # S1_y
-            ham -= self.k_T / self.mass * self.thrust_max * torch.where(dVdv1[..., 2] > 0, self.control_max, 0.25) * torch.abs(dVdv1[..., 2])  # T1_z
+            ham -= self.k_T / self.mass * torch.where(dVdv1[..., 2] >= 0, self.control_max, 0.25) * torch.abs(dVdv1[..., 2])  # T1_z
             
             # Pursuer tries to prevent reaching (minimize value function)
             ham += self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega2[..., 0])  # S2_x
             ham += self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega2[..., 1])  # S2_y
-            ham += self.k_T / self.mass * self.thrust_max * torch.where(dVdv2[..., 2] > 0, self.control_max, 0.25) * torch.abs(dVdv2[..., 2])  # T2_z
+            ham += self.k_T / self.mass * torch.where(dVdv2[..., 2] > 0, self.control_max, 0.25) * torch.abs(dVdv2[..., 2])  # T2_z
         
         return ham
 
@@ -3278,7 +3275,7 @@ class DronePursuitEvasion20D(Dynamics):
             # Evader tries to avoid capture (minimize value function)
             control[..., 0] = self.control_max * torch.sign(dVdomega1[..., 0])  # S1_x
             control[..., 1] = self.control_max * torch.sign(dVdomega1[..., 1])  # S1_y
-            control[..., 2] = torch.where(dVdv1[..., 2] > 0, self.control_max, 0.25)  # T1_z
+            control[..., 2] = torch.where(dVdv1[..., 2] >= 0, self.control_max, 0.25)  # T1_z
         elif self.set_mode == 'reach':
             # Evader tries to reach target (maximize value function)
             control[..., 0] = -self.control_max * torch.sign(dVdomega1[..., 0])  # S1_x
@@ -3304,7 +3301,7 @@ class DronePursuitEvasion20D(Dynamics):
             # Pursuer tries to prevent reaching (minimize value function)
             disturbance[..., 0] = self.control_max * torch.sign(dVdomega2[..., 0])  # S2_x
             disturbance[..., 1] = self.control_max * torch.sign(dVdomega2[..., 1])  # S2_y
-            disturbance[..., 2] = torch.where(dVdv2[..., 2] > 0, self.control_max, 0.25)  # T2_z
+            disturbance[..., 2] = torch.where(dVdv2[..., 2] >= 0, self.control_max, 0.25)  # T2_z
         else:
             raise NotImplementedError(f"Unknown set_mode: {self.set_mode}")
 
@@ -3405,27 +3402,15 @@ class DronePursuitEvasion20D(Dynamics):
         # Use boundary function for consistency
         return torch.min(self.boundary_fn(state_traj), dim=-1).values
 
-    # def plot_config(self):
-    #     return {
-    #         'state_slices': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,  # Drone 1
-    #                         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0], # Drone 2
-    #         'state_labels': ['x1', 'v1_x', 'θ1_x', 'ω1_x', 'y1', 'v1_y', 'θ1_y', 'ω1_y', 'z1', 'v1_z',
-    #                        'x2', 'v2_x', 'θ2_x', 'ω2_x', 'y2', 'v2_y', 'θ2_y', 'ω2_y', 'z2', 'v2_z'],
-    #         'x_axis_idx': 0,  # x1
-    #         'y_axis_idx': 4,  # y1
-    #         'z_axis_idx': 8,  # z1
-    #     }
-    
-    #for z velocity plot
     def plot_config(self):
         return {
             'state_slices': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,  # Drone 1
                             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0], # Drone 2
             'state_labels': ['x1', 'v1_x', 'θ1_x', 'ω1_x', 'y1', 'v1_y', 'θ1_y', 'ω1_y', 'z1', 'v1_z',
                            'x2', 'v2_x', 'θ2_x', 'ω2_x', 'y2', 'v2_y', 'θ2_y', 'ω2_y', 'z2', 'v2_z'],
-            'x_axis_idx': 9,  # v1_z (z velocity)
-            'y_axis_idx': 8,  # z1 (z position)
-            'z_axis_idx': 0,  # x1 (for 3D plots)
+            'x_axis_idx': 0,  # x1
+            'y_axis_idx': 4,  # y1
+            'z_axis_idx': 8,  # z1
         }
 
 class Quadrotor(Dynamics):

@@ -26,6 +26,7 @@ install(PROGRAMS
   scripts/deepreach_full_state_controller.py
   scripts/full_state_controller.py
   scripts/pursuit_evasion_controller.py
+  scripts/20d_drone_controller.py
   DESTINATION lib/${PROJECT_NAME})
 
 rosidl_generate_interfaces(${PROJECT_NAME}

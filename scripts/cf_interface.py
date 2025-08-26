@@ -15,7 +15,7 @@ from functools import partial
 
 
 MODE = "both"
-CONTROL_MODE = "full_state"   # "full_state" or "control"
+CONTROL_MODE = "full_state"   # "full_state" for 12d or "control" for 20d only
 
 class CfInterface(Node):
     def __init__(self, node_name='cf_interface'):
