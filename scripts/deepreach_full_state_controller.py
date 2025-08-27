@@ -23,7 +23,7 @@ else:
     device = torch.device("cpu")
 
 # Model path - update this to your actual model path
-MODEL_PATH = "/mounted_volume/ros2_ws/src/crazyflie_interface/scripts/drone_6d.pth"
+MODEL_PATH = "/mounted_volume/ros2_ws/src/crazyflie_interface/scripts/dr_models/drone_6d.pth"
 
 # numpy logging only 2 digits
 np.set_printoptions(precision=2, suppress=True, floatmode='fixed')

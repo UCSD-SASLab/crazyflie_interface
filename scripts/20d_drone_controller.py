@@ -25,7 +25,7 @@ else:
     device = torch.device("cpu")
 
 # Model path - update this to your actual 20D model path
-MODEL_PATH = "/mounted_volume/ros2_ws/src/crazyflie_interface/scripts/20d_aug22_cone.pth"
+MODEL_PATH = "/mounted_volume/ros2_ws/src/crazyflie_interface/scripts/dr_models/20d_aug22_cone.pth"
 
 # numpy logging only 2 digits
 np.set_printoptions(precision=2, suppress=True, floatmode='fixed')
