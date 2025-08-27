@@ -31,21 +31,25 @@ MODEL_PATH = "/mounted_volume/ros2_ws/src/crazyflie_interface/scripts/20d_aug20.
 np.set_printoptions(precision=2, suppress=True, floatmode='fixed')
 
 MODE = ["hover", "deepreach"][1]  # Default to deepreach mode
+GHOST_AGENT = ["pursuer", "evader"][0]
+GHOST_CONTROL_MODE = ["hover", "circle", "deepreach"][0]  # How to control the ghost agent
 
-class DeepReach20DController(TemplateController):
-    def __init__(self, node_name='deepreach_20d_controller'):
+class DeepReach20DControllerGhost(TemplateController):
+    def __init__(self, node_name='deepreach_20d_controller_ghost'):
         super().__init__(node_name, allow_undeclared_parameters=True, automatically_declare_parameters_from_overrides=True)
         
         # Get robot parameters
         self._ros_parameters = self._param_to_dict(self._parameters)
         robots = self._ros_parameters.get('robots', {})
         self.get_logger().info(f"Robots: {robots}")
-        self.nbr_robots = len(robots)
-        self.get_logger().info(f"Number of robots: {self.nbr_robots}")
+        self.nbr_flying_robots = len(robots)
+        self.nbr_robots = self.nbr_flying_robots + 1
+        self.get_logger().info(f"Number of robots (including ghost): {self.nbr_robots}")
         
         # Initialize DeepReach components if using deepreach mode
         if MODE == "deepreach":
             # Initialize 20D dynamics
+            # TODO: Make sure all parameters are correct
             self.dynamics = DronePursuitEvasion20D(
                 thrust_max=16.0,
                 max_angle=0.3,  # radians
@@ -76,11 +80,14 @@ class DeepReach20DController(TemplateController):
         self.dt = 1.0/self.controller_rate # Control period (50Hz)
 
         self.get_logger().info(f"Control period: {self.dt}")
+
+        self.ghost_state = np.zeros(10)
+        self.ghost_state[[0,4,8]] = np.array([1.0, 1.0, 1.0])  # Initial ghost position
         
         # Initialize JSON logging
         self.log_data = []
         self.start_time = time.time()  # Track start time for relative timestamps
-        self.log_filename = f"/mounted_volume/drone_experiment_data/20drones_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        self.log_filename = f"/mounted_volume/drone_experiment_data/20drones_{GHOST_AGENT}ghost_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         self.get_logger().info(f"JSON logging enabled. Log file: {self.log_filename}")
         
         # Track first occurrence of events
@@ -113,103 +120,181 @@ class DeepReach20DController(TemplateController):
             control: Flattened array of control inputs for all robots
                      Format: 4 elements per robot [roll, pitch, yaw_rate, thrust]
         """
-        states = np.array(state).reshape(self.nbr_robots, -1)
-        u = np.zeros((states.shape[0], 4))
+        states = np.array(state).reshape(self.nbr_flying_robots, -1)
+        u = np.zeros((self.nbr_flying_robots, 4))
         
         if MODE == "hover":
             # Hover mode - set thrust to hover value
-            self.u_hover = np.array([0.0, 0.0, 0.0, 11.95])
+            self.u_hover = np.array([0.0, 0.0, 0.0, 14.95])
             u[:, 3] = self.u_hover[3]  # thrust
                 
         elif MODE == "deepreach":
+            # Handle takeoff and hover phase
             if(self.nbr_robots != 2):
                 raise ValueError("Pursuit evasion mode only supports 2 drones")
 
-            # --- Build 20D state vector ---
+            # Extract full state information from robot states
+            # Initialize 20D state with zeros for angles and angular velocities
             drone_20d_state = np.zeros(20)
+            
             for i, robot_state in enumerate(states):
-                pos = robot_state[0:3]
-                vel = robot_state[3:6]
-                quat_raw = robot_state[6:10]   # qx,qy,qz,qw
-                omega = robot_state[10:13]
-
-                quat = np.array([quat_raw[3], quat_raw[0], quat_raw[1], quat_raw[2]])
+                # Full state format: [x, y, z, vx, vy, vz, qx, qy, qz, qw, omega_x, omega_y, omega_z, ...]
+                pos = robot_state[0:3]    # x, y, z
+                vel = robot_state[3:6]    # vx, vy, vz
+                quat_raw = robot_state[6:10]  # qx, qy, qz, qw
+                omega = robot_state[10:13] # omega_x, omega_y, omega_z
+                
+                
+                # Convert quaternion from [qx, qy, qz, qw] to [qw, qx, qy, qz] format for rowan
+                quat = np.array([quat_raw[3], quat_raw[0], quat_raw[1], quat_raw[2]])  # [qw, qx, qy, qz]
+                
+                # Convert quaternion to Euler angles to get roll and pitch
                 euler_angles = rowan.to_euler(quat, "xyz")
-                roll, pitch = euler_angles[0], euler_angles[1]
+                roll = euler_angles[0]   # θ_x
+                pitch = euler_angles[1]  # θ_y
+                
+                if GHOST_AGENT == "pursuer":  # Live Drone 1 (evader)
+                    # [x1, v1_x, θ1_x, ω1_x, y1, v1_y, θ1_y, ω1_y, z1, v1_z]
+                    drone_20d_state[0] = pos[0]   # x1
+                    drone_20d_state[1] = vel[0]   # v1_x
+                    drone_20d_state[2] = pitch    # θ1_x (pitch angle)
+                    drone_20d_state[3] = omega[0] # ω1_x (angular velocity around x)
+                    drone_20d_state[4] = pos[1]   # y1
+                    drone_20d_state[5] = vel[1]   # v1_y
+                    drone_20d_state[6] = roll     # θ1_y (roll angle)
+                    drone_20d_state[7] = omega[1] # ω1_y (angular velocity around y)
+                    drone_20d_state[8] = pos[2]   # z1
+                    drone_20d_state[9] = vel[2]   # v1_z
 
-                if i == 0:  # Evader
-                    drone_20d_state[0] = pos[0]
-                    drone_20d_state[1] = vel[0]
-                    drone_20d_state[2] = pitch
-                    drone_20d_state[3] = omega[0]
-                    drone_20d_state[4] = pos[1]
-                    drone_20d_state[5] = vel[1]
-                    drone_20d_state[6] = roll
-                    drone_20d_state[7] = omega[1]
-                    drone_20d_state[8] = pos[2]
-                    drone_20d_state[9] = vel[2]
-                else:       # Pursuer
-                    drone_20d_state[10] = pos[0]
-                    drone_20d_state[11] = vel[0]
-                    drone_20d_state[12] = pitch
-                    drone_20d_state[13] = omega[0]
-                    drone_20d_state[14] = pos[1]
-                    drone_20d_state[15] = vel[1]
-                    drone_20d_state[16] = roll
-                    drone_20d_state[17] = omega[1]
-                    drone_20d_state[18] = pos[2]
-                    drone_20d_state[19] = vel[2]
+                    # Create a simple ghost state for the pursuer
+                    drone_20d_state[10] = self.ghost_state[0]  # x2
+                    drone_20d_state[14] = self.ghost_state[4]  # y2
+                    drone_20d_state[18] = self.ghost_state[8]  # z2
 
-            # --- DeepReach inference ---
+                else:  # Live Drone 2 (pursuer)
+                    # [x2, v2_x, θ2_x, ω2_x, y2, v2_y, θ2_y, ω2_y, z2, v2_z]
+                    drone_20d_state[10] = pos[0]  # x2
+                    drone_20d_state[11] = vel[0]  # v2_x
+                    drone_20d_state[12] = pitch   # θ2_x (pitch angle)
+                    drone_20d_state[13] = omega[0] # ω2_x (angular velocity around x)
+                    drone_20d_state[14] = pos[1]  # y2
+                    drone_20d_state[15] = vel[1]  # v2_y
+                    drone_20d_state[16] = roll    # θ2_y (roll angle)
+                    drone_20d_state[17] = omega[1] # ω2_y (angular velocity around y)
+                    drone_20d_state[18] = pos[2]  # z2
+                    drone_20d_state[19] = vel[2]  # v2_z
+
+                    # Create a simple ghost state for the evader
+                    drone_20d_state[0] = self.ghost_state[0]  # x1
+                    drone_20d_state[4] = self.ghost_state[4]  # y1
+                    drone_20d_state[8] = self.ghost_state[8]  # z1
+            
+            # Convert to tensor for DeepReach
             drone_20d_state_tensor = torch.tensor(drone_20d_state, dtype=torch.float32, device=device)
-            time_tensor = torch.tensor([1.0], dtype=torch.float32, device=device)
-            deepreach_input = torch.cat([time_tensor, drone_20d_state_tensor]).unsqueeze(0)
 
+            self.get_logger().info(f"Evader state: {drone_20d_state[0:10]}")
+            self.get_logger().info(f"Pursuer state: {drone_20d_state[10:20]}")
+            
+            # Add time dimension for DeepReach input: [time, state]
+            time_tensor = torch.tensor([1.0], dtype=torch.float32, device=device)
+            deepreach_input = torch.cat([time_tensor, drone_20d_state_tensor]).unsqueeze(0)  # [1, 21]
+            
             traj_policy_results = self.model(
                 {"coords": self.dynamics.coord_to_input(deepreach_input)}
             )
+            
             model_out = traj_policy_results["model_out"]
             model_in = traj_policy_results["model_in"]
-
+            
+            # Ensure proper shape for dynamics calculations
             if model_out.dim() == 1:
                 model_out = model_out.unsqueeze(0)
-
-            dv = self.dynamics.io_to_dv(model_in, model_out.squeeze(dim=-1)).detach()
-
-            # --- Compute control & disturbance for evader ---
+            
+            dv = self.dynamics.io_to_dv(
+                model_in,
+                model_out.squeeze(dim=-1),
+            ).detach()
+            
+            # Use gradient to compute optimal control and disturbance
             optimal_u = self.dynamics.optimal_control(drone_20d_state_tensor, dv[..., 1:])
             optimal_d = self.dynamics.optimal_disturbance(drone_20d_state_tensor, dv[..., 1:])
-
+            
+            # Debug gradients for thrust control
+            dVdv1_z = dv[..., 1:][0, 9].item()  # gradient w.r.t. v1_z
+            dVdv2_z = dv[..., 1:][0, 19].item()  # gradient w.r.t. v2_z
+            #self.get_logger().info(f"Gradients - dVdv1_z: {dVdv1_z:.4f}, dVdv2_z: {dVdv2_z:.4f}")
+            
+            # Extract control inputs from DeepReach
+            # Control: [S1_x, S1_y, T1_z] (evader)
+            # Disturbance: [S2_x, S2_y, T2_z] (pursuer)
             evader_control = np.array([
-                self.dynamics.max_torque * optimal_u[0, 0].item(),
-                self.dynamics.max_torque * optimal_u[0, 1].item(),
-                self.dynamics.thrust_max * self.dynamics.k_T * optimal_u[0, 2].item()
+                self.dynamics.max_torque * optimal_u[0, 0].item(),  # S1_x
+                self.dynamics.max_torque * optimal_u[0, 1].item(),  # S1_y
+                self.dynamics.thrust_max * self.dynamics.k_T * optimal_u[0, 2].item()   # T1_z
             ])
-            evader_disturbance = np.array([
-                self.dynamics.max_torque * optimal_d[0, 0].item(),
-                self.dynamics.max_torque * optimal_d[0, 1].item(),
-                self.dynamics.thrust_max * self.dynamics.k_T * optimal_d[0, 2].item()
+            pursuer_control = np.array([
+                self.dynamics.max_torque * optimal_d[0, 0].item(),  # S2_x
+                self.dynamics.max_torque * optimal_d[0, 1].item(),  # S2_y
+                self.dynamics.thrust_max * self.dynamics.k_T * optimal_d[0, 2].item()   # T2_z
             ])
 
             self.get_logger().info(f"Evader control: {evader_control}")
-            self.get_logger().info(f"Evader disturbance: {evader_disturbance}")
+            self.get_logger().info(f"Pursuer control: {pursuer_control}")
+            
+            # Apply control limits for safety     # T2_z
+            # FIXME: Add in that we want to control yaw again
+            # Convert DeepReach controls to Crazyflie format: [roll, pitch, yaw_rate, thrust]
+            if GHOST_AGENT == "pursuer":
+                # Evader (drone 0) : DeepReach control
+                u[0, 0] = evader_control[1]  # roll
+                u[0, 1] = -evader_control[0]  # pitch
+                u[0, 2] = 0.0  # yaw_rate
+                u[0, 3] = evader_control[2]  # thrust
 
-            # --- Apply controls ---
-            # Evader (drone 0) : DeepReach + disturbance
-            u[0, 0] = evader_control[1] + evader_disturbance[1]   # roll
-            u[0, 1] = -(evader_control[0] + evader_disturbance[0])# pitch
-            u[0, 2] = 0.0                                         # yaw_rate
-            u[0, 3] = evader_control[2] + evader_disturbance[2]   # thrust
+                # We want to calculate (if necessary the updated ghost state)
+                if GHOST_CONTROL_MODE == "hover":
+                    self.ghost_state = self.ghost_state  # No change, maintain hover
+                elif GHOST_CONTROL_MODE == "circle":
+                    # self.ghost_state[0] = initial_ghost_state[0] + 1.0 * np.cos(0.2 * self.iteration * self.dt)  # x
+                    raise NotImplementedError("Circle mode not implemented yet")
+                elif GHOST_CONTROL_MODE == "deepreach":
+                    # Imagine what the next 20d state would be by integrating deepreach forward
+                    f = self.dynamics.dsdt(drone_20d_state_tensor, optimal_u, optimal_d)
+                    next_state = drone_20d_state_tensor + self.dt * f.squeeze(0)
+                    self.ghost_state = next_state[10:20].cpu().numpy()  # Update ghost state to next pursuer state
+                else:
+                    raise ValueError(f"Unknown GHOST_CONTROL_MODE: {GHOST_CONTROL_MODE}")
 
-            # Pursuer (drone 1) : fixed hover
-            u[1, 0] = 0.0
-            u[1, 1] = 0.0
-            u[1, 2] = 0.0
-            u[1, 3] = 11.95
 
-            # --- Safety limits ---
-            u[:, :2] = np.clip(u[:, :2], -0.3, 0.3)
-            u[:, 3] = np.clip(u[:, 3], 4.0, 16.0)
+            elif GHOST_AGENT == "evader":
+                # Pursuer (drone 1) : fixed hover
+                u[0, 0] = pursuer_control[1]  # roll
+                u[0, 1] = -pursuer_control[0]  # pitch
+                u[0, 2] = 0.0
+                u[0, 3] = pursuer_control[2]  # thrust
+
+                if GHOST_CONTROL_MODE == "hover":
+                    self.ghost_state = self.ghost_state  # No change, maintain hover
+                elif GHOST_CONTROL_MODE == "circle":
+                    # self.ghost_state[0] = initial_ghost_state[0] + 1.0 * np.cos(0.2 * self.iteration * self.dt)  # x
+                    raise NotImplementedError("Circle mode not implemented yet")
+                elif GHOST_CONTROL_MODE == "deepreach":
+                    # Imagine what the next 20d state would be by integrating deepreach forward
+                    f = self.dynamics.dsdt(drone_20d_state_tensor, optimal_d, optimal_u)
+                    next_state = drone_20d_state_tensor + self.dt * f.squeeze(0)
+                    self.ghost_state = next_state[0:10].cpu().numpy()  # Update ghost state to next evader state
+                else:
+                    raise ValueError(f"Unknown GHOST_CONTROL_MODE: {GHOST_CONTROL_MODE}")
+            
+            # TODO AY: Add in a marker for the ghost drone in RViz to visualize the ghost position
+
+                # We want to calculate (if necessary the updated ghost state)
+            else:
+                raise ValueError(f"Unknown GHOST_AGENT: {GHOST_AGENT}")
+            
+            # Apply final safety limits
+            u[:, :2] = np.clip(u[:, :2], -0.3, 0.3)  # roll, pitch limits
+            u[:, 3] = np.clip(u[:, 3], 4.0, 16.0)    # thrust limits
                 
         else:
             raise NotImplementedError(f"Mode {MODE} not implemented")
@@ -218,65 +303,66 @@ class DeepReach20DController(TemplateController):
         
         # Log the actual positions of the robots
         # Extract actual positions and velocities from [x, y, z, vx, vy, vz] format
-        actual_pos1 = states[0, 0:3]  # Current actual position [x, y, z]
-        actual_vel1 = states[0, 3:6]  # Current actual velocity [vx, vy, vz]
-        actual_pos2 = states[1, 0:3]  # Current actual position [x, y, z]
-        actual_vel2 = states[1, 3:6]  # Current actual velocity [vx, vy, vz]
+        if MODE == "deepreach":
+            actual_pos1 = drone_20d_state[[0, 4, 8]]  # Current actual position [x, y, z]
+            actual_vel1 = drone_20d_state[[1, 5, 9]]  # Current actual velocity [vx, vy, vz]
+            actual_pos2 = drone_20d_state[[10, 14, 18]]  # Current actual position [x, y, z]
+            actual_vel2 = drone_20d_state[[11, 15, 19]]  # Current actual velocity [vx, vy, vz]
 
-        xydist = np.linalg.norm(actual_pos1[0:2] - actual_pos2[0:2])
-        z_dist = np.abs(actual_pos1[2] - actual_pos2[2])
+            xydist = np.linalg.norm(actual_pos1[0:2] - actual_pos2[0:2])
+            z_dist = np.abs(actual_pos1[2] - actual_pos2[2])
 
-        # Box bounds check (Evader only)
-        box_min = np.array([-4.5, -2.5, 0.0])  # min x, y, z
-        box_max = np.array([ 4.5,  2.5, 2.5])  # max x, y, z
+            # Box bounds check (Evader only)
+            box_min = np.array([-4.5, -2.5, 0.0])  # min x, y, z
+            box_max = np.array([ 4.5,  2.5, 2.5])  # max x, y, z
 
-        if(xydist < 0.25 and z_dist < 0.75):
-            # Track first collision warning time
-            if self.first_collision_warning_time is None:
-                self.first_collision_warning_time = time.time() - self.start_time
-            self.get_logger().info(f"Collision warning! Distance: {xydist:.2f} m in xy and {z_dist:.2f} m in z direction")
+            if(xydist < 0.25 and z_dist < 0.75):
+                # Track first collision warning time
+                if self.first_collision_warning_time is None:
+                    self.first_collision_warning_time = time.time() - self.start_time
+                self.get_logger().info(f"Collision warning! Distance: {xydist:.2f} m in xy and {z_dist:.2f} m in z direction")
 
-        if np.any(actual_pos1 < box_min) or np.any(actual_pos1 > box_max):
-            # Track first out of bounds time
-            if self.first_out_of_bounds_time is None:
-                self.first_out_of_bounds_time = time.time() - self.start_time
-            self.get_logger().warn(
-                f"Evader OUT OF BOUNDS: position {actual_pos1}"
-            )
+            if np.any(actual_pos1 < box_min) or np.any(actual_pos1 > box_max):
+                # Track first out of bounds time
+                if self.first_out_of_bounds_time is None:
+                    self.first_out_of_bounds_time = time.time() - self.start_time
+                self.get_logger().warn(
+                    f"Evader OUT OF BOUNDS: position {actual_pos1}"
+                )
 
-        if self.iteration % 50 == 0:  # Log every 50 iterations (about once per second)
-            self.get_logger().info(f"DeepReach 20D Mode - Iteration {self.iteration}: Current positions for {self.nbr_robots} robots")
+            if self.iteration % 50 == 0:  # Log every 50 iterations (about once per second)
+                self.get_logger().info(f"DeepReach 20D Mode - Iteration {self.iteration}: Current positions for {self.nbr_robots} robots")
 
-            self.get_logger().info(f"Evader actual position: [{actual_pos1[0]:.2f}, {actual_pos1[1]:.2f}, {actual_pos1[2]:.2f}]")
-            self.get_logger().info(f"Evader actual velocity: [{actual_vel1[0]:.2f}, {actual_vel1[1]:.2f}, {actual_vel1[2]:.2f}]")
-            self.get_logger().info(f"Pursuer actual position: [{actual_pos2[0]:.2f}, {actual_pos2[1]:.2f}, {actual_pos2[2]:.2f}]")
-            self.get_logger().info(f"Pursuer actual velocity: [{actual_vel2[0]:.2f}, {actual_vel2[1]:.2f}, {actual_vel2[2]:.2f}]")
+                self.get_logger().info(f"Evader actual position: [{actual_pos1[0]:.2f}, {actual_pos1[1]:.2f}, {actual_pos1[2]:.2f}]")
+                self.get_logger().info(f"Evader actual velocity: [{actual_vel1[0]:.2f}, {actual_vel1[1]:.2f}, {actual_vel1[2]:.2f}]")
+                self.get_logger().info(f"Pursuer actual position: [{actual_pos2[0]:.2f}, {actual_pos2[1]:.2f}, {actual_pos2[2]:.2f}]")
+                self.get_logger().info(f"Pursuer actual velocity: [{actual_vel2[0]:.2f}, {actual_vel2[1]:.2f}, {actual_vel2[2]:.2f}]")
 
-            if self.first_collision_warning_time is not None or self.first_out_of_bounds_time is not None:
-                self.get_logger().warn("Safety event detected - ending control loop")
+                if self.first_collision_warning_time is not None or self.first_out_of_bounds_time is not None:
+                    self.get_logger().warn("Safety event detected - ending control loop")
 
-        log_entry = {
-            "timestamp": time.time() - self.start_time,  # Relative time in seconds
-            "evader": {
-                "actual_position": actual_pos1.tolist(),
-                "actual_velocity": actual_vel1.tolist(),
-                "control": evader_control.tolist() if MODE == "deepreach" else None
-            },
-            "pursuer": {
-                "actual_position": actual_pos2.tolist(),
-                "actual_velocity": actual_vel2.tolist(),
-                "control": pursuer_control.tolist() if MODE == "deepreach" else None
-            },
-            "distances": {
-                "xy_distance": float(xydist),
-                "z_distance": float(z_dist)
-            },
-            "events": {
-                "first_collision_warning_time": self.first_collision_warning_time,
-                "first_out_of_bounds_time": self.first_out_of_bounds_time
+            log_entry = {
+                "timestamp": time.time() - self.start_time,  # Relative time in seconds
+                "evader": {
+                    "actual_position": actual_pos1.tolist(),
+                    "actual_velocity": actual_vel1.tolist(),
+                    "control": evader_control.tolist() if MODE == "deepreach" else None
+                },
+                "pursuer": {
+                    "actual_position": actual_pos2.tolist(),
+                    "actual_velocity": actual_vel2.tolist(),
+                    "control": pursuer_control.tolist() if MODE == "deepreach" else None
+                },
+                "distances": {
+                    "xy_distance": float(xydist),
+                    "z_distance": float(z_dist)
+                },
+                "events": {
+                    "first_collision_warning_time": self.first_collision_warning_time,
+                    "first_out_of_bounds_time": self.first_out_of_bounds_time
+                }
             }
-        }
-        self.log_data.append(log_entry)
+            self.log_data.append(log_entry)
 
         self.get_logger().info(f"Control: {u}")
         return u.flatten()
@@ -302,7 +388,7 @@ class DeepReach20DController(TemplateController):
 
 def main(args=None):
     rclpy.init(args=args)
-    controller = DeepReach20DController()
+    controller = DeepReach20DControllerGhost()
     
     try:
         rclpy.spin(controller)

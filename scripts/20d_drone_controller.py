@@ -45,6 +45,7 @@ class DeepReach20DController(TemplateController):
         
         # Initialize DeepReach components if using deepreach mode
         if MODE == "deepreach":
+            # TODO: Make sure all parameters are correct
             # Initialize 20D dynamics
             self.dynamics = DronePursuitEvasion20D(
                 thrust_max=16.0,
@@ -223,17 +224,6 @@ class DeepReach20DController(TemplateController):
 
             self.get_logger().info(f"Evader control: {evader_control}")
             self.get_logger().info(f"Pursuer control: {pursuer_control}")
-            
-            # Apply control limits for safety
-            # max_torque = 0.3
-            # max_thrust = 16.0
-            # evader_control[0] = np.clip(evader_control[0], -max_torque, max_torque)  # S1_x
-            # evader_control[1] = np.clip(evader_control[1], -max_torque, max_torque)  # S1_y
-            # evader_control[2] = np.clip(evader_control[2], 0.25*max_thrust, max_thrust)         # T1_z
-            
-            # pursuer_control[0] = np.clip(pursuer_control[0], -max_torque, max_torque)  # S2_x
-            # pursuer_control[1] = np.clip(pursuer_control[1], -max_torque, max_torque)  # S2_y
-            # pursuer_control[2] = np.clip(pursuer_control[2], 0.25*max_thrust, max_thrust)         # T2_z
             
             # Convert DeepReach controls to Crazyflie format: [roll, pitch, yaw_rate, thrust]
             # For evader (drone 0)

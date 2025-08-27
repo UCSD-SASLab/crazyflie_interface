@@ -12,12 +12,12 @@ def parse_yaml(context):
     crazyflies_yaml = LaunchConfiguration('crazyflies_yaml').perform(context)
     with open(crazyflies_yaml, 'r') as ymlfile:
         crazyflies = yaml.safe_load(ymlfile)
-    parameters = [crazyflies, {"ghost_mode": LaunchConfiguration("ghost_mode")}]
+    parameters = [crazyflies]
     return [
         Node(
             package='crazyflie_interface',
             executable='20d_drone_controller_ghost.py',
-            name='deepreach_20d_controller',
+            name='deepreach_20d_controller_ghost',
             output='screen',
             parameters=parameters
         ),
@@ -40,10 +40,6 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'uri', default_value='',
             description='Robot number'
-        ),
-        DeclareLaunchArgument(
-        'ghost_mode', default_value='true',
-        description='If true, pursuer acts as ghost (hover)'
         ),
         OpaqueFunction(function=parse_yaml),
         IncludeLaunchDescription(
