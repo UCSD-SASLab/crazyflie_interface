@@ -12,10 +12,12 @@ from example_interfaces.msg import Float32MultiArray
 from std_msgs.msg import Bool
 from crazyflie_interface.msg import StateStamped
 from functools import partial
-
+import rowan
 
 MODE = "both"
-CONTROL_MODE = "full_state"   # "full_state" for 12d or "control" for 20d only
+CONTROL_MODE = "control"   # "full_state" for 12d or "control" for 20d only
+ANGULAR_VEL_CALC_METHOD = ["direct", "finite_difference"][0]  # How to get angular velocity from orientation
+
 
 class CfInterface(Node):
     def __init__(self, node_name='cf_interface'):
@@ -104,6 +106,9 @@ class CfInterface(Node):
         self.state_is_publishing = False
         self.state_publisher_timer = self.create_timer(0.01, self.state_publisher_callback)
 
+        # self.last_state is dict of nones for uri keys
+        self.last_euler_state = {uri: None for uri in self.uris}
+        self.last_time = {uri: None for uri in self.uris}
 
     def _param_to_dict(self, param_ros):
         """
@@ -199,11 +204,31 @@ class CfInterface(Node):
             vel = np.array([msg.twist.twist.linear.x, msg.twist.twist.linear.y, msg.twist.twist.linear.z])
             quat = np.array([msg.pose.pose.orientation.x, msg.pose.pose.orientation.y, msg.pose.pose.orientation.z, 
                              msg.pose.pose.orientation.w])
-            omega = np.array([msg.twist.twist.angular.x, msg.twist.twist.angular.y, msg.twist.twist.angular.z])
-            
-            # edit? Print out state for debugging
-            #self.get_logger().info(f"State for {uri} - Pos: {pos}, Vel: {vel}, Quat: {quat}, Omega: {omega}")
+            quat_mod = np.array([quat[3], quat[0], quat[1], quat[2]])  # [qw, qx, qy, qz]e
+            euler_angles = rowan.to_euler(quat_mod, "xyz")
+            roll = euler_angles[0]   # θ_y
+            pitch = -euler_angles[1]  # θ_x
+            yaw = euler_angles[2]
+            euler_xyz = np.array([pitch, roll, yaw])  # [θ_x, θ_y, θ_z] in radians
 
+            if ANGULAR_VEL_CALC_METHOD == "direct":
+                omega = np.array([msg.twist.twist.angular.x, msg.twist.twist.angular.y, msg.twist.twist.angular.z])
+                if self.backend == "sim":
+                    omega = omega
+                else:
+                    omega = omega * np.pi / 180.0  # Convert to rad/s 
+            
+            elif ANGULAR_VEL_CALC_METHOD == "finite_difference":
+                time_now = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+                if self.last_euler_state[uri] is None:
+                    omega = np.array([0.0, 0.0, 0.0])
+                else:
+                    # convert quaternion to euler
+                    omega = (euler_xyz - self.last_euler_state[uri]) / (time_now - self.last_time[uri])  # Assuming 100 Hz update rate
+                self.last_euler_state[uri] = euler_xyz
+                self.last_time[uri] = time_now
+            else: 
+                raise NotImplementedError("Angular velocity calculation method not yet supported: {}".format(ANGULAR_VEL_CALC_METHOD))
             
             # For the uri need the index of the crazyflie
             if uri not in self.uris:
@@ -211,6 +236,7 @@ class CfInterface(Node):
                 return
             # Find index of uri in self.uris
             index = self.uris.index(uri)
+            self.get_logger().info(f"{omega}", throttle_duration_sec=0.2)
             self.state[index] = np.concatenate((pos, vel, quat, omega))
             self.timestamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
             
