@@ -254,7 +254,7 @@ class DeepReach20DControllerGhost(TemplateController):
                     # Convert quaternion to Euler angles to get roll and pitch
                     euler_angles = rowan.to_euler(quat, "xyz")
                     roll = euler_angles[0]   # θ_y
-                    pitch = euler_angles[1]  # θ_x
+                    pitch = -euler_angles[1]  # θ_x
                 
                 if GHOST_AGENT == "pursuer":  # Live Drone 1 (evader)
                     # [x1, v1_x, θ1_x, ω1_x, y1, v1_y, θ1_y, ω1_y, z1, v1_z]
