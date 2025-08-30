@@ -159,9 +159,10 @@ class DeepReach20DController(TemplateController):
                 
                 # Convert quaternion to Euler angles to get roll and pitch
                 euler_angles = rowan.to_euler(quat, "xyz")
-                roll = euler_angles[0]   # θ_y
-                pitch = -euler_angles[1]  # θ_x
-                
+                # The euler angles here are flipped compared to the drone convention
+                roll = -euler_angles[0]   # θ_y  (post sign change: +roll = positive y acceleration)
+                pitch = euler_angles[1]  # θ_x  (without sign change: +pitch = positive x acceleration)
+                    
                 if i == 0:  # Drone 1 (evader)
                     # [x1, v1_x, θ1_x, ω1_x, y1, v1_y, θ1_y, ω1_y, z1, v1_z]
                     drone_20d_state[0] = pos[0]   # x1

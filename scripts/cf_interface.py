@@ -206,8 +206,9 @@ class CfInterface(Node):
                              msg.pose.pose.orientation.w])
             quat_mod = np.array([quat[3], quat[0], quat[1], quat[2]])  # [qw, qx, qy, qz]e
             euler_angles = rowan.to_euler(quat_mod, "xyz")
-            roll = euler_angles[0]   # θ_y
-            pitch = -euler_angles[1]  # θ_x
+            # The euler angles here are flipped compared to the drone convention
+            roll = -euler_angles[0]   # θ_y  (post sign change: +roll = positive y acceleration)
+            pitch = euler_angles[1]  # θ_x  (without sign change: +pitch = positive x acceleration)
             yaw = euler_angles[2]
             euler_xyz = np.array([pitch, roll, yaw])  # [θ_x, θ_y, θ_z] in radians
 
@@ -349,6 +350,7 @@ class CfInterface(Node):
         control_drone = control_model.copy()
         control_drone[:3] = np.degrees(control_drone[:3])
         control_drone[:2] = np.clip(control_drone[:2], -90, 90)  # No clipping on yaw rate
+        control_drone[0] = -control_drone[0]  # Inverting roll for crazyflie
         if self.backend == "sim":
             control_drone[2] = -control_drone[2]  # Inverting yaw rate for simulation
         control_drone[3] = np.clip(control_drone[3] * 4096.0, 10000, 65535)  # Clipping required to function

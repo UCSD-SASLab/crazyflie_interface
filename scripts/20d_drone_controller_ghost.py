@@ -227,8 +227,22 @@ class DeepReach20DControllerGhost(TemplateController):
         
         if MODE == "hover":
             # Hover mode - set thrust to hover value
-            self.u_hover = np.array([0.0, 0.0, 0.0, 14.95])
-            u[:, 3] = self.u_hover[3]  # thrust
+            self.u_hover = np.array([0.0, 0.0, 0.0, 11.95])
+            u[:] = self.u_hover  # thrust
+
+            pos = states[0, 0:3]    # x, y, z
+            vel = states[0, 3:6]    # vx, vy, vz
+            quat_raw = states[0, 6:10]  # qx, qy, qz, qw
+            omega = states[0, 10:13] # omega_x, omega_y, omega_z
+            
+            # Convert quaternion from [qx, qy, qz, qw] to [qw, qx, qy, qz] format for rowan
+            quat = np.array([quat_raw[3], quat_raw[0], quat_raw[1], quat_raw[2]])  # [qw, qx, qy, qz]
+            
+            # Convert quaternion to Euler angles to get roll and pitch
+            euler_angles = rowan.to_euler(quat, "xyz")
+            # The euler angles here are flipped compared to the drone convention
+            roll = -euler_angles[0]   # θ_y  (post sign change: +roll = positive y acceleration)
+            pitch = euler_angles[1]  # θ_x  (without sign change: +pitch = positive x acceleration)
                 
         elif MODE == "deepreach":
             # Handle takeoff and hover phase
@@ -253,8 +267,9 @@ class DeepReach20DControllerGhost(TemplateController):
                     
                     # Convert quaternion to Euler angles to get roll and pitch
                     euler_angles = rowan.to_euler(quat, "xyz")
-                    roll = euler_angles[0]   # θ_y
-                    pitch = -euler_angles[1]  # θ_x
+                    # The euler angles here are flipped compared to the drone convention
+                    roll = -euler_angles[0]   # θ_y  (post sign change: +roll = positive y acceleration)
+                    pitch = euler_angles[1]  # θ_x  (without sign change: +pitch = positive x acceleration)
                 
                 if GHOST_AGENT == "pursuer":  # Live Drone 1 (evader)
                     # [x1, v1_x, θ1_x, ω1_x, y1, v1_y, θ1_y, ω1_y, z1, v1_z]
@@ -362,8 +377,8 @@ class DeepReach20DControllerGhost(TemplateController):
             # Convert DeepReach controls to Crazyflie format: [roll, pitch, yaw_rate, thrust]
             if GHOST_AGENT == "pursuer":
                 # Evader (drone 0) : DeepReach control
-                u[0, 0] = evader_control[1]  # roll
-                u[0, 1] = -evader_control[0]  # pitch
+                u[0, 0] = evader_control[1]  # roll  # drone convention (+roll = positive y acceleration)
+                u[0, 1] = -evader_control[0]  # pitch # SIGN CHANGE for drone convention (+pitch = negative x acceleration)
                 u[0, 2] = 0.0  # yaw_rate
                 u[0, 3] = evader_control[2]  # thrust
 
@@ -389,8 +404,8 @@ class DeepReach20DControllerGhost(TemplateController):
 
             elif GHOST_AGENT == "evader":
                 # Pursuer (drone 1) : fixed hover
-                u[0, 0] = pursuer_control[1]  # roll
-                u[0, 1] = -pursuer_control[0]  # pitch
+                u[0, 0] = pursuer_control[1]  # roll  # drone convention (+roll = positive y acceleration)
+                u[0, 1] = -pursuer_control[0]  # pitch # SIGN CHANGE for drone convention (+pitch = negative x acceleration)
                 u[0, 2] = 0.0
                 u[0, 3] = pursuer_control[2]  # thrust
 
@@ -510,6 +525,8 @@ class DeepReach20DControllerGhost(TemplateController):
             self.log_data.append(log_entry)
 
         self.get_logger().info(f"Control: {u}")
+        self.get_logger().info(f"Position: {state[0:3]}")
+        self.get_logger().info(f"Roll for DR: {roll:.2f}, Pitch for DR: {pitch:.2f}")
         return u.flatten()
 
     def save_log_file(self):

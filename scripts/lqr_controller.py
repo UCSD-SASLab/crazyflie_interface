@@ -6,7 +6,7 @@ from crazyflie_interface_py.template_controller import TemplateController
 # numpy logging only 2 digits
 np.set_printoptions(precision=2, suppress=True, floatmode='fixed')
 
-MODE = "hover" #"2repeats1", # "hover"  # "1repeats2"  # "2repeats1"  # "hover"
+MODE = "lqr" #"2repeats1", # "hover"  # "1repeats2"  # "2repeats1"  # "hover"
 
 class LQRController(TemplateController):
     def __init__(self, node_name='lqr_controller'):
@@ -17,8 +17,8 @@ class LQRController(TemplateController):
         self.nbr_robots = len(robots)
         self.get_logger().info(f"Number of robots: {self.nbr_robots}")
         gain_matrix = np.zeros((4, 7))
-        gain_matrix[0, 1] = 0.2  # y -> roll
-        gain_matrix[0, 4] = 0.2  # v_y -> roll
+        gain_matrix[0, 1] = -0.2  # y -> roll
+        gain_matrix[0, 4] = -0.2  # v_y -> roll
         gain_matrix[1, 0] = 0.2  # x -> pitch
         gain_matrix[1, 3] = 0.2  # v_x -> pitch
         gain_matrix[2, 6] = 2.0  # yaw -> yaw_dot
