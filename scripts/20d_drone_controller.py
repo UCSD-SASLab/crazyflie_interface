@@ -7,6 +7,8 @@ import sys
 import os
 import time
 import json
+import pickle
+import inspect
 from datetime import datetime
 
 # Add the scripts directory to the path
@@ -15,6 +17,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from crazyflie_interface_py.template_controller import TemplateController
 from deepreach.utils.modules import SingleBVPNet
 from deepreach.dynamics import DronePursuitEvasion20D
+from deepreach import dynamics
 
 # Set device for PyTorch
 if torch.backends.mps.is_available():
@@ -25,7 +28,7 @@ else:
     device = torch.device("cpu")
 
 # Model path - update this to your actual 20D model path
-MODEL_PATH = "/mounted_volume/ros2_ws/src/crazyflie_interface/scripts/dr_models/20d_aug22_cone.pth"
+MODEL_PATH = "/mounted_volume/ros2_ws/src/crazyflie_interface/scripts/dr_models/20d_cone_aug27"
 
 # numpy logging only 2 digits
 np.set_printoptions(precision=2, suppress=True, floatmode='fixed')
@@ -42,29 +45,41 @@ class DeepReach20DController(TemplateController):
         self.get_logger().info(f"Robots: {robots}")
         self.nbr_robots = len(robots)
         self.get_logger().info(f"Number of robots: {self.nbr_robots}")
+
+        with open(os.path.join(MODEL_PATH, "orig_opt.pickle"), 'rb') as f:
+            self.orig_opt = pickle.load(f)
         
         # Initialize DeepReach components if using deepreach mode
         if MODE == "deepreach":
+
             # TODO: Make sure all parameters are correct
             # Initialize 20D dynamics
-            self.dynamics = DronePursuitEvasion20D(
-                thrust_max=16.0,
-                max_angle=0.3,  # radians
-                max_torque=0.3,
-                capture_radius=0.25,
-                set_mode='avoid'
-            )
+            # self.dynamics = DronePursuitEvasion20D(
+            #     thrust_max=16.0,
+            #     max_angle=0.3,  # radians
+            #     max_torque=0.3,
+            #     capture_radius=0.25,
+            #     set_mode='avoid'
+            # )
 
-            self.model = SingleBVPNet(
-                in_features=25,  # 20 state + 1 time + 4 periodic transforms
-                hidden_features=512,
-                num_hidden_layers=3,
-                out_features=1,
-                type='sine',
-                periodic_transform_fn=self.dynamics.periodic_transform_fn 
-            )
+            # self.model = SingleBVPNet(
+            #     in_features=25,  # 20 state + 1 time + 4 periodic transforms
+            #     hidden_features=512,
+            #     num_hidden_layers=3,
+            #     out_features=1,
+            #     type='sine',
+            #     periodic_transform_fn=self.dynamics.periodic_transform_fn 
+            # )
 
-            checkpoint = torch.load(MODEL_PATH, map_location=device, weights_only=True)
+            dynamics_class = getattr(dynamics, self.orig_opt.dynamics_class)
+            self.dynamics = dynamics_class(**{argname: getattr(self.orig_opt, argname)
+                          for argname in inspect.signature(dynamics_class).parameters.keys() if argname != 'self'})
+            
+            self.model = SingleBVPNet(in_features=self.dynamics.input_dim, out_features=1, type=self.orig_opt.model, mode=self.orig_opt.model_mode,
+                             final_layer_factor=1., hidden_features=self.orig_opt.num_nl, num_hidden_layers=self.orig_opt.num_hl,
+                             periodic_transform_fn=self.dynamics.periodic_transform_fn)
+
+            checkpoint = torch.load(os.path.join(MODEL_PATH, "model_final.pth"), map_location=device, weights_only=True)
             self.model.load_state_dict(checkpoint["model"])
             self.model.to(device)
             self.model.eval()
@@ -291,12 +306,14 @@ class DeepReach20DController(TemplateController):
             "evader": {
                 "actual_position": actual_pos1.tolist(),
                 "actual_velocity": actual_vel1.tolist(),
-                "control": evader_control.tolist() if MODE == "deepreach" else None
+                "control": evader_control.tolist() if MODE == "deepreach" else None,
+                "full_state": states[0].tolist()
             },
             "pursuer": {
                 "actual_position": actual_pos2.tolist(),
                 "actual_velocity": actual_vel2.tolist(),
-                "control": pursuer_control.tolist() if MODE == "deepreach" else None
+                "control": pursuer_control.tolist() if MODE == "deepreach" else None,
+                "full_state": states[1].tolist()
             },
             "distances": {
                 "xy_distance": float(xydist),
