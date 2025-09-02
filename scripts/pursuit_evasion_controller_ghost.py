@@ -18,6 +18,8 @@ from crazyflie_interface_py.template_controller import TemplateController
 from deepreach.utils.modules import SingleBVPNet
 from deepreach.dynamics import DronePursuitEvasion12D, DronePursuitEvasion12DPure
 from deepreach import dynamics
+from visualization_msgs.msg import Marker
+from geometry_msgs.msg import Point
 
 # Set device for PyTorch
 if torch.backends.mps.is_available():
@@ -33,24 +35,69 @@ MODEL_PATH = "/mounted_volume/ros2_ws/src/crazyflie_interface/scripts/dr_models/
 # numpy logging only 2 digits
 np.set_printoptions(precision=2, suppress=True, floatmode='fixed')
 
-MODE = ["hover", "deepreach"][1]  # Default to deepreach mode
+MODE = ["hover", "deepreach"][1]  # Default to circle mode
+GHOST_AGENT = ["pursuer", "evader", "both"][2]
+GHOST_CONTROL_MODE = ["hover", "circle", "deepreach"][0]  # How to control the ghost agent
 
 
 # u: u[0] = p_x, u[1] = p_y, u[2] = p_z, u[3] = v_x, u[4] = v_y, u[5] = v_z, u[6:10] = quaternion, u[10] = omega_x, u[11] = omega_y, u[12] = omega_z, 
 #    u[13] = acc_x, u[14] = acc_y, u[15] = acc_z
-class FullStateController(TemplateController):
-    def __init__(self, node_name='fullstate_controller'):
+class FullStateControllerGhost(TemplateController):
+    def __init__(self, node_name='fullstate_controller_ghost'):
         # Set the full state control topic
         self.control_publisher_topic = 'cf_interface/control_full_state'
         
         super().__init__(node_name, allow_undeclared_parameters=True, automatically_declare_parameters_from_overrides=True)
-        
+
+        self.ghost_state = np.zeros(16)  # Initialize ghost state
+        self.ghost_state_evader[[0,1,2]] = np.array([-0.25, -0.25, 1.0])  # Initial ghost position
+        self.ghost_state_pursuer = np.zeros(16)
+        self.ghost_state_pursuer[[0,1,2]] = np.array([0.0, 0.0, 1.0])  # Initial ghost position
         # Get robot parameters
         self._ros_parameters = self._param_to_dict(self._parameters)
         robots = self._ros_parameters.get('robots', {})
         self.get_logger().info(f"Robots: {robots}")
-        self.nbr_robots = len(robots)
-        self.get_logger().info(f"Number of robots: {self.nbr_robots}")
+        self.nbr_flying_robots = len(robots)
+        self.nbr_robots = self.nbr_flying_robots + 1
+        self.get_logger().info(f"Number of robots (including ghost): {self.nbr_robots}")
+        # Create marker publisher for ghost visualization
+        self.marker_pub = self.create_publisher(Marker, 'ghost_evader_marker', 1)
+        
+        self.evader_marker = Marker()
+        self.evader_marker.ns = "ghost_evader"
+        self.evader_marker.header.frame_id = "world"
+        self.evader_marker.type = Marker.SPHERE
+        self.evader_marker.action = Marker.ADD
+        self.evader_marker.scale.x = 0.1
+        self.evader_marker.scale.y = 0.1
+        self.evader_marker.scale.z = 0.1
+        self.evader_marker.color.a = 1.0
+        self.evader_marker.color.r = 0.0
+        self.evader_marker.color.g = 1.0
+        self.evader_marker.color.b = 0.0
+        self.evader_marker.pose.position.x = float(self.ghost_state_evader[0].item())
+        self.evader_marker.pose.position.y = float(self.ghost_state_evader[1].item())
+        self.evader_marker.pose.position.z = float(self.ghost_state_evader[2].item())
+        self.evader_marker.id = 0
+        self.marker_pub.publish(self.evader_marker)
+
+        self.pursuer_marker = Marker()
+        self.pursuer_marker.ns = "ghost_pursuer"
+        self.pursuer_marker.header.frame_id = "world"
+        self.pursuer_marker.type = Marker.SPHERE
+        self.pursuer_marker.action = Marker.ADD
+        self.pursuer_marker.scale.x = 0.1
+        self.pursuer_marker.scale.y = 0.1
+        self.pursuer_marker.scale.z = 0.1
+        self.pursuer_marker.color.a = 1.0
+        self.pursuer_marker.color.r = 1.0
+        self.pursuer_marker.color.g = 0.0
+        self.pursuer_marker.color.b = 0.0
+        self.pursuer_marker.pose.position.x = float(self.ghost_state_pursuer[0].item())
+        self.pursuer_marker.pose.position.y = float(self.ghost_state_pursuer[1].item())
+        self.pursuer_marker.pose.position.z = float(self.ghost_state_pursuer[2].item())
+        self.pursuer_marker.id = 1
+        self.marker_pub.publish(self.pursuer_marker)
 
         with open(os.path.join(MODEL_PATH, "orig_opt.pickle"), 'rb') as f:
             self.orig_opt = pickle.load(f)
@@ -95,7 +142,7 @@ class FullStateController(TemplateController):
         # Initialize JSON logging
         self.log_data = []
         self.start_time = time.time()  # Track start time for relative timestamps
-        self.log_filename = f"/mounted_volume/drone_experiment_data/12drones_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        self.log_filename = f"/mounted_volume/drone_experiment_data/12drones_{GHOST_AGENT}ghost_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         self.get_logger().info(f"JSON logging enabled. Log file: {self.log_filename}")
         
         # Track first occurrence of events
@@ -163,7 +210,7 @@ class FullStateController(TemplateController):
             control: Flattened array of full state control inputs for all robots
                      Format: 16 elements per robot [pos(3), vel(3), quat(4), omega(3), acc(3)]
         """
-        states = np.array(state).reshape(self.nbr_robots, -1)
+        states = np.array(state).reshape(self.nbr_flying_robots, -1)
         u = np.zeros((states.shape[0], 16))
         u[:, 9] = 1.0  # w -> zero rotation by default (unit quaternion)
         
@@ -180,30 +227,51 @@ class FullStateController(TemplateController):
                 raise ValueError("Pursuit evasion mode only supports 2 drones")
 
             # 12d_state = [x1, y1, z1, vx1, vy1, vz1, x2, y2, z2, vx2, vy2, vz2]
-            drone_12d_state = []
+            drone_12d_state = np.zeros(12)
             
             for i, robot_state in enumerate(states):
                 # Extract position and velocity from [x, y, z, vx, vy, vz] format
                 pos = robot_state[0:3]  # x, y, z
                 vel = robot_state[3:6]  # vx, vy, vz
+
+                if GHOST_AGENT == "pursuer":  # Live Drone 1 (evader)
+                    # [x1, v1_x, y1, v1_y, z1, v1_z]
+                    drone_12d_state[0] = pos[0]
+                    drone_12d_state[1] = vel[0]
+                    drone_12d_state[2] = pos[1]
+                    drone_12d_state[3] = vel[1]
+                    drone_12d_state[4] = pos[2]
+                    drone_12d_state[5] = vel[2]
+                    # Create a simple ghost state for the pursuer
+                    drone_12d_state[6:12] = self.ghost_state_pursuer
+                elif GHOST_AGENT == "evader":  # Live Drone 2 (pursuer)
+                    # [x2, v2_x, y2, v2_y, z2, v2_z]
+                    drone_12d_state[6] = pos[0]
+                    drone_12d_state[7] = vel[0]
+                    drone_12d_state[8] = pos[1]
+                    drone_12d_state[9] = vel[1]
+                    drone_12d_state[10] = pos[2]
+                    drone_12d_state[11] = vel[2]
+                    # Create a simple ghost state for the evader
+                    drone_12d_state[0:6] = self.ghost_state_evader
+            
+                elif GHOST_AGENT == "both":
+                    drone_12d_state[0:6] = self.ghost_state_evader
+                    drone_12d_state[6:12] = self.ghost_state_pursuer
+                else:
+                    raise ValueError(f"Unknown GHOST_AGENT: {GHOST_AGENT}")
+            
+
                 
-                # Convert to DeepReach format: [x, vx, y, vy, z, vz] (interleaved)
-                drone_6d_state = np.array([
-                    pos[0],    # x
-                    vel[0],    # vx
-                    pos[1],    # y
-                    vel[1],    # vy
-                    pos[2],    # z
-                    vel[2]     # vz
-                ])
-                
-                drone_12d_state.append(drone_6d_state)
+
             
             # Combine both drone states into a single 12D state
             combined_12d_state = np.concatenate(drone_12d_state)  # [12] = [6] + [6]
             
             # Convert to tensor for DeepReach
             drone_12d_state_tensor = torch.tensor(combined_12d_state, dtype=torch.float32, device=device)
+            self.get_logger().info(f"Evader state: {drone_12d_state[0:6]}")
+            self.get_logger().info(f"Pursuer state: {drone_12d_state[6:12]}")
             
             # Add time dimension for DeepReach input: [time, state]
             time_tensor = torch.tensor([1.0], dtype=torch.float32, device=device)
@@ -224,26 +292,31 @@ class FullStateController(TemplateController):
                 model_in,
                 model_out.squeeze(dim=-1),
             ).detach()
+
+            value = self.dynamics.io_to_value(
+                model_in,
+                model_out.squeeze(dim=-1),
+            ).detach()
+
+            ellx = self.dynamics.boundary_fn(drone_12d_state_tensor).detach()
             
             # Use gradient to compute optimal control and disturbance
             optimal_u = self.dynamics.optimal_control(drone_12d_state_tensor, dv[..., 1:])
             optimal_d = self.dynamics.optimal_disturbance(drone_12d_state_tensor, dv[..., 1:])
             
             # Extract acceleration inputs from DeepReach
-            acceleration1 = np.array([
+            acceleration1 = np.array([ # evader control
                 self.dynamics.sideways_multiplier * optimal_u[0, 0].item(),  # ax
                 self.dynamics.sideways_multiplier * optimal_u[0, 1].item(),  # ay
                 self.dynamics.input_multiplier * optimal_u[0, 2].item()  # az
             ])
             
-            acceleration2 = np.array([
+            acceleration2 = np.array([ # pursuer control
                 self.dynamics.sideways_multiplier * optimal_d[0, 0].item(),  # ax
                 self.dynamics.sideways_multiplier * optimal_d[0, 1].item(),  # ay
                 self.dynamics.input_multiplier * optimal_d[0, 2].item()   # az
             ])
-
-        
-            
+         
             # Apply acceleration limits for safety
             max_acc = 2.0  # m/s^2
             acceleration1[2] = np.clip(acceleration1[2], -max_acc, max_acc)
