@@ -769,7 +769,7 @@ class Dubins6D(Dynamics):
             raise NotImplementedError(f"Unknown set_mode: {self.set_mode}")
 
         #Sampling variance for dynamics
-        desired_variance = self.omega_e_max
+        desired_variance = 5*self.omega_e_max
         self.eps_var_control = torch.tensor([desired_variance]).to(device)
         self.eps_var_disturbance = torch.tensor([desired_variance]).to(device)
 
@@ -2588,8 +2588,8 @@ class CooperativeDrones12D(Dynamics):
             return inter_drone_dist - target_sep
         elif self.set_mode == 'reach_avoid':
             # Example: reach a target separation while avoiding collision
+            dist = 0.0
             target_sep = 2.0
-            dist = 0 # FIXME AY
             avoid = dist - self.collisionR
             reach = dist - target_sep
             # max(reach, -avoid): must reach target sep and not be in collision
@@ -2726,7 +2726,7 @@ class Drone10DWithDist(Dynamics):
         # Velocity derivatives (with control, disturbance, and drag terms)
         dsdt[..., 1] = -self.Gz * torch.tan(state[..., 2]) - self.c_x * state[..., 1] + disturbance[..., 0]  # v̇_x = g * tan(θ_x) - c_x * v_x + d_x
         dsdt[..., 5] = -self.Gz * torch.tan(state[..., 6]) - self.c_y * state[..., 5] + disturbance[..., 1]  # v̇_y = g * tan(θ_y) - c_y * v_y + d_y
-        dsdt[..., 9] = self.k_T / self.mass * control[..., 2] + disturbance[..., 2] + self.Gz  # v_z_dot = T_z + d_z - g
+        dsdt[..., 9] = (self.k_T / self.mass) * control[..., 2] + disturbance[..., 2] + self.Gz  # v_z_dot = T_z + d_z - g
         
         # Angle derivatives
         dsdt[..., 2] = state[..., 3] - self.d1 * state[..., 2]  # θ_x_dot = ω_x - d1 * θ_x
@@ -2773,7 +2773,7 @@ class Drone10DWithDist(Dynamics):
             ham += self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega[..., 1])  # S_y
            
             # T_z control contribution 
-            ham += self.k_T / self.mass * (4.0 * torch.abs(dVdv[..., 2]) + (self.thrust_max - 4.0) * torch.relu(dVdv[..., 2]))  # Use min thrust when negative, max when positive
+            ham += (self.k_T / self.mass) * (4.0 * torch.abs(dVdv[..., 2]) + (self.thrust_max - 4.0) * torch.relu(dVdv[..., 2]))  # Use min thrust when negative, max when positive
 
             ham -= self.disturbance_max * torch.abs(dVdv).sum(-1)
 
@@ -2782,7 +2782,7 @@ class Drone10DWithDist(Dynamics):
             ham -= self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega[..., 1])  # S_y
            
             # T_z control contribution 
-            ham -= self.k_T / self.mass * (4.0 * torch.abs(dVdv[..., 2]) + (self.thrust_max - 4.0) * torch.relu(dVdv[..., 2]))  # Use min thrust when negative, max when positive
+            ham -= (self.k_T / self.mass) * (4.0 * torch.abs(dVdv[..., 2]) + (self.thrust_max - 4.0) * torch.relu(dVdv[..., 2]))  # Use min thrust when negative, max when positive
 
             ham += self.disturbance_max * torch.abs(dVdv).sum(-1)
         
@@ -3007,6 +3007,377 @@ class Drone10DWithDist(Dynamics):
     #         'z_axis_idx': 8,  # z
     #     }
 
+class Drone10DSingle(Dynamics):
+    def __init__(
+        self,
+        thrust_max: float,
+        max_angle: float,
+        max_torque: float,
+        set_mode: str,
+    ):
+        self.state_dim = 10  # Updated to 10D
+        self.control_dim = 3
+        self.disturbance_dim = 0
+
+        self.control_max = 1.0  # u_max (normalized control bound)
+        self.max_torque = max_torque
+        self.Gz = -9.81
+        self.max_v = 2.0
+        self.max_omega = 1.0  # Maximum angular velocity
+        self.max_theta = max_angle  # Maximum angle (radians)
+
+        self.d0 = 20.0  # Updated fitted parameter
+        self.d1 = 4.5  # Updated fitted parameter
+        self.n0 = 18.0  # Updated fitted parameter
+        self.k_T = 0.83  # Updated thrust multiplier
+        self.mass = 1.0
+        self.c_x = 0.3  # Drag coefficient for x direction
+        self.c_y = 0.3  # Drag coefficient for y direction
+        self.thrust_max = thrust_max
+
+        # State: [x, v_x, θ_x, ω_x, y, v_y, θ_y, ω_y, z, v_z]
+
+        state_range_ = torch.tensor(
+            [
+                [-4.5, 4.5],
+                [-self.max_v, self.max_v],
+                [-self.max_theta, self.max_theta],
+                [-self.max_omega, self.max_omega],  # x, v_x, θ_x, ω_x
+                [-2.5, 2.5],
+                [-self.max_v, self.max_v],
+                [-self.max_theta, self.max_theta],
+                [-self.max_omega, self.max_omega],  # y, v_y, θ_y, ω_y
+                [0.0, 2.2],
+                [-self.max_v, self.max_v],  # z, v_z
+            ]
+        )
+        control_range_ = torch.tensor(
+            [
+                [-self.control_max, self.control_max],  # S_x
+                [-self.control_max, self.control_max],  # S_y
+                [0.25, self.control_max],  # T_z
+            ]
+        )
+
+        box_bounds_ = torch.tensor(
+            [
+                [-4.0, 4.0],
+                [-self.max_v, self.max_v],
+                [-2.0, 2.0],
+                [-self.max_v, self.max_v],
+                [0.2, 2.0],
+                [-self.max_v, self.max_v],
+            ]
+        )
+        self.set_mode = set_mode
+        if self.set_mode == "avoid":
+            loss_type = "brt_hjivi"
+        else:
+            raise NotImplementedError(f"Unknown set_mode: {self.set_mode}")
+        state_mean_ = (state_range_[:, 0] + state_range_[:, 1]) / 2.0
+        state_var_ = (state_range_[:, 1] - state_range_[:, 0]) / 2.0
+
+        super().__init__(
+            name="Drone10DSingle",
+            loss_type=loss_type,
+            set_mode=set_mode,
+            state_dim=10,
+            input_dim=13,
+            control_dim=self.control_dim,
+            disturbance_dim=self.disturbance_dim,
+            state_mean=state_mean_.tolist(),
+            state_var=state_var_.tolist(),
+            value_mean=0.2,
+            value_var=0.5,
+            value_normto=0.02,
+            deepReach_model="exact",
+        )
+        self.state_range_ = state_range_.to(device)
+        self.control_range_ = control_range_.to(device)
+        self.box_bounds_ = box_bounds_.to(device)
+        self.control_init = torch.tensor([0, 0, (-self.Gz * self.mass) / (self.thrust_max * self.k_T)]).to(
+            device
+        )  # Updated for new control range [4, 16]
+        self.eps_var_control = torch.tensor([self.control_max, self.control_max, self.control_max]).to(
+            device
+        )  # Updated for new control range
+
+    def dsdt(self, state, control, disturbance):
+        dsdt = torch.zeros_like(state)
+
+        # State: [x, v_x, θ_x, ω_x, y, v_y, θ_y, ω_y, z, v_z]
+        # Control: [S_x, S_y, T_z]
+
+        # Position derivatives
+        dsdt[..., 0] = state[..., 1]  # x_dot = v_x
+        dsdt[..., 4] = state[..., 5]  # y_dot = v_y
+        dsdt[..., 8] = state[..., 9]  # z_dot = v_z
+
+        # Velocity derivatives (with control, disturbance, and drag terms)
+        dsdt[..., 1] = (
+            -self.Gz * torch.tan(state[..., 2]) - self.c_x * state[..., 1]
+        )  # v̇_x = g * tan(θ_x) - c_x * v_x
+        dsdt[..., 5] = (
+            -self.Gz * torch.tan(state[..., 6]) - self.c_y * state[..., 5]
+        )  # v̇_y = g * tan(θ_y) - c_y * v_y
+        dsdt[..., 9] = (
+            self.k_T / self.mass * self.thrust_max * control[..., 2] + self.Gz
+        )  # v_z_dot = T_z - g
+
+        # Angle derivatives
+        dsdt[..., 2] = state[..., 3] - self.d1 * state[..., 2]  # θ_x_dot = ω_x - d1 * θ_x
+        dsdt[..., 6] = state[..., 7] - self.d1 * state[..., 6]  # θ_y_dot = ω_y - d1 * θ_y
+
+        dsdt[..., 3] = -self.d0 * state[..., 2] + self.n0 * self.max_torque * control[..., 0]  # ω̇_x
+        dsdt[..., 7] = -self.d0 * state[..., 6] + self.n0 * self.max_torque * control[..., 1]  # ω̇_y
+
+        return dsdt
+
+    def hamiltonian(self, state, dvds):
+        # Extract velocities and gradients
+        v = state[..., [1, 5, 9]]  # [v_x, v_y, v_z]
+        omega = state[..., [3, 7]]  # [ω_x, ω_y]
+        theta = state[..., [2, 6]]  # [θ_x, θ_y]
+
+        dVdp = dvds[..., [0, 4, 8]]  # [dV/dx, dV/dy, dV/dz]
+        dVdv = dvds[..., [1, 5, 9]]  # [dV/dv_x, dV/dv_y, dV/dv_z]
+        dVdtheta = dvds[..., [2, 6]]  # [dV/dθ_x, dV/dθ_y]
+        dVdomega = dvds[..., [3, 7]]  # [dV/dω_x, dV/dω_y]
+
+        # Position derivatives: v * dVdp
+        ham = (v * dVdp).sum(-1)
+
+        # Velocity derivatives: gravity terms, angle-dependent terms, and drag terms
+        ham += dVdv[..., 0] * (
+            -self.Gz * torch.tan(theta[..., 0]) - self.c_x * v[..., 0]
+        )  # v_x term with drag
+        ham += dVdv[..., 1] * (
+            -self.Gz * torch.tan(theta[..., 1]) - self.c_y * v[..., 1]
+        )  # v_y term with drag
+        ham += dVdv[..., 2] * self.Gz  # v_z gravity term
+
+        # Angle derivatives: omega * dVdtheta - damping terms
+        ham += (omega * dVdtheta).sum(-1)
+        ham += dVdtheta[..., 0] * (-self.d1 * theta[..., 0])  # θ_x damping
+        ham += dVdtheta[..., 1] * (-self.d1 * theta[..., 1])  # θ_y damping
+
+        # Angular velocity derivatives: damping terms
+        ham += dVdomega[..., 0] * (-self.d0 * theta[..., 0])  # ω_x damping
+        ham += dVdomega[..., 1] * (-self.d0 * theta[..., 1])  # ω_y damping
+
+        # Control terms with correct multipliers
+        if self.set_mode == "avoid":
+            ham += self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega[..., 0])  # S_x
+            ham += self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega[..., 1])  # S_y
+
+            # T_z control contribution
+            ham += (
+                (self.k_T
+                / self.mass)
+                * self.thrust_max
+                * torch.where(dVdv[..., 2] > 0, self.control_max, 0.25)
+                * torch.abs(dVdv[..., 2])
+            )  # T1_z
+
+        else:
+            raise NotImplementedError(f"Unknown set_mode: {self.set_mode}")
+
+        return ham
+
+
+    def boundary_fn(self, state):
+        # state: (..., 10) - [x, v_x, θ_x, ω_x, y, v_y, θ_y, ω_y, z, v_z]
+        # Box: x, y in [-1.5, 1.5], z in [0, 3]
+        px, py, pz = state[..., 0], state[..., 4], state[..., 8]
+
+        box_bounds = self.box_bounds_.to(state.device)
+
+        x_min, x_max = box_bounds[0, 0], box_bounds[0, 1]
+        y_min, y_max = box_bounds[2, 0], box_bounds[2, 1]
+        z_min, z_max = box_bounds[4, 0], box_bounds[4, 1]
+
+        # Compute per-dimension signed distances to box faces
+        dx_min = px - x_min
+        dx_max = x_max - px
+        dy_min = py - y_min
+        dy_max = y_max - py
+        dz_min = pz - z_min
+        dz_max = z_max - pz
+
+        # Inside: minimum distance to any face (negative inside, zero on surface)
+        inside_dist = torch.min(
+            torch.stack([dx_min, dx_max, dy_min, dy_max, dz_min, dz_max], dim=-1), dim=-1
+        ).values
+
+        # For outside: compute the per-dimension "over" (how far outside the box in each dim)
+        over_x = torch.clamp(px - x_max, min=0) + torch.clamp(x_min - px, min=0)
+        over_y = torch.clamp(py - y_max, min=0) + torch.clamp(y_min - py, min=0)
+        over_z = torch.clamp(pz - z_max, min=0) + torch.clamp(z_min - pz, min=0)
+        # Norm of the "over" vector gives Euclidean distance outside
+        outside_dist = torch.norm(torch.stack([over_x, over_y, over_z], dim=-1), dim=-1)
+
+        # If all inside (all distances to faces > 0), use inside_dist; else use outside_dist
+        is_inside = (
+            (dx_min > 0) & (dx_max > 0) & (dy_min > 0) & (dy_max > 0) & (dz_min > 0) & (dz_max > 0)
+        )
+        return torch.where(is_inside, inside_dist, -outside_dist)
+
+        # center = torch.tensor([0.0, 0.0, 1.5], device=state.device)
+        # pos = torch.stack([px, py, pz], dim=-1)
+        # dist = torch.norm(pos - center, dim=-1)
+        # radius = 1.5
+
+        # pos_sdf = radius - dist
+
+        # return pos_sdf
+
+    def equivalent_wrapped_state(self, state):
+        wrapped_state = torch.clone(state)
+        # Wrap θ_x (index 2)
+        wrapped_state[..., 2] = (wrapped_state[..., 2] + math.pi) % (2 * math.pi) - math.pi
+        # Wrap θ_y (index 6)
+        wrapped_state[..., 6] = (wrapped_state[..., 6] + math.pi) % (2 * math.pi) - math.pi
+        return wrapped_state
+
+    def periodic_transform_fn(self, input):
+        # Transform periodic angles θ_x and θ_y to sin/cos components
+        # Input: [..., 11] - [t, x, v_x, θ_x, ω_x, y, v_y, θ_y, ω_y, z, v_z]
+        # Output: [..., 13] - [t, x, v_x, sin(θ_x), cos(θ_x), ω_x, y, v_y, sin(θ_y), cos(θ_y), ω_y, z, v_z]
+
+        output_shape = list(input.shape)
+        output_shape[-1] = output_shape[-1] + 2  # Add 2 dimensions for sin/cos transforms
+        transformed_input = torch.zeros(output_shape, device=input.device)
+
+        # Copy non-periodic variables
+        transformed_input[..., 0] = input[..., 0]  # t (time)
+        transformed_input[..., 1] = input[..., 1]  # x
+        transformed_input[..., 2] = input[..., 2]  # v_x
+        transformed_input[..., 5] = input[..., 4]  # ω_x
+        transformed_input[..., 6] = input[..., 5]  # y
+        transformed_input[..., 7] = input[..., 6]  # v_y
+        transformed_input[..., 10] = input[..., 8]  # ω_y
+        transformed_input[..., 11] = input[..., 9]  # z
+        transformed_input[..., 12] = input[..., 10]  # v_z
+
+        theta_x = input[..., 3]
+        transformed_input[..., 3] = torch.sin(theta_x * self.state_var[2])  # sin(θ_x)
+        transformed_input[..., 4] = torch.cos(theta_x * self.state_var[2])  # cos(θ_x)
+
+        # Transform θ_y to sin/cos
+        theta_y = input[..., 7]
+        transformed_input[..., 8] = torch.sin(theta_y * self.state_var[6])  # sin(θ_y)
+        transformed_input[..., 9] = torch.cos(theta_y * self.state_var[6])  # cos(θ_y)
+
+        return transformed_input
+
+    def sample_target_state(self, num_samples):
+        raise NotImplementedError
+
+    def state_test_range(self):
+        return self.state_range_.cpu().tolist()
+
+    def state_verification_range(self):
+        return self.state_range_.cpu().tolist()
+
+    def control_range(self, state):
+        return self.control_range_.tolist()
+
+    def disturbance_range(self, state):
+        return self.disturbance_range_.tolist()
+
+    def bound_control(self, control):
+        return torch.clamp(control, self.control_range_[:, 0], self.control_range_[:, 1])
+
+    def bound_disturbance(self, disturbance):
+        return torch.clamp(
+            disturbance, self.disturbance_range_[:, 0], self.disturbance_range_[:, 1]
+        )
+
+    def clamp_control(self, state, control):
+        return self.bound_control(control)
+
+    def clamp_disturbance(self, state, disturbance):
+        return self.bound_disturbance(disturbance)
+
+    def clip_state(self, state):
+        return torch.clamp(state, self.state_range_[..., 0], self.state_range_[..., 1])
+
+    def cost_fn(self, state_traj):
+        # Use boundary function for consistency
+        return torch.min(self.boundary_fn(state_traj), dim=-1).values
+
+    def optimal_control(self, state, dvds):
+        # Extract gradients for different control inputs
+        dVdomega = dvds[..., [3, 7]]  # [dV/dω_x, dV/dω_y] for torque controls S_x, S_y
+        dVdv = dvds[..., [1, 5, 9]]  # [dV/dv_x, dV/dv_y, dV/dv_z] for thrust control T_z
+
+        control = torch.zeros_like(dVdv)
+
+        if self.set_mode == "avoid":
+            # Control: [S_x, S_y, T_z]
+            # Torque controls (S_x, S_y) based on angular velocity gradients
+            control[..., 0] = self.control_max * torch.sign(dVdomega[..., 0])  # S_x
+            control[..., 1] = self.control_max * torch.sign(dVdomega[..., 1])  # S_y
+            control[..., 2] = torch.where(
+                dVdv[..., 2] > 0, self.control_max, 0.25
+            )  # T_z in [0.25, 1]
+        elif self.set_mode == "reach":
+            # Control: [S_x, S_y, T_z]
+            # Torque controls (S_x, S_y) based on angular velocity gradients
+            control[..., 0] = -self.control_max * torch.sign(dVdomega[..., 0])  # S_x
+            control[..., 1] = -self.control_max * torch.sign(dVdomega[..., 1])  # S_y
+            control[..., 2] = torch.where(
+                dVdv[..., 2] > 0, 0.25, self.control_max
+            )  # T_z in [0.25, 1]
+        else:
+            raise NotImplementedError(f"Unknown set_mode: {self.set_mode}")
+        return control
+
+    def optimal_disturbance(self, state, dvds):
+        return torch.zeros(1)
+
+    # For cylinder plotting
+    # def plot_config(self):
+    #     return {
+    #         'state_slices': [0.0, -1.43, 0.0, 0.0, 0.0, -1.2, 0.0, 0.0, 1.5, -0.1],  # [x, v_x, θ_x, ω_x, y, v_y, θ_y, ω_y, z, v_z]
+    #         'state_labels': ['x', 'v_x', 'θ_x', 'ω_x', 'y', 'v_y', 'θ_y', 'ω_y', 'z', 'v_z'],
+    #         'x_axis_idx': 0,  # x
+    #         'y_axis_idx': 4,  # y
+    #         'z_axis_idx': 8,  # z
+    #     }
+
+    # For vertical box plotting
+    def plot_config(self):
+        return {
+            "state_slices": [
+                0.0,
+                -0.8,
+                0.0,
+                0.0,
+                0.0,
+                -1.2,
+                0.0,
+                0.0,
+                1.5,
+                0.0,
+            ],  # [x, v_x, θ_x, ω_x, y, v_y, θ_y, ω_y, z, v_z]
+            "state_labels": ["x", "v_x", "θ_x", "ω_x", "y", "v_y", "θ_y", "ω_y", "z", "v_z"],
+            "x_axis_idx": 0,  # x
+            "y_axis_idx": 4,  # y
+            "z_axis_idx": 8,  # z
+        }
+
+    # # #For horizontal box plotting
+    # def plot_config(self):
+    #     return {
+    #         'state_slices': [0.0, -0.8, 0.0, 0.0, 0.0, -1.2, 0.0, 0.0, 1.5, 0.0],  # [x, v_x, θ_x, ω_x, y, v_y, θ_y, ω_y, z, v_z]
+    #         'state_labels': ['x', 'v_x', 'θ_x', 'ω_x', 'y', 'v_y', 'θ_y', 'ω_y', 'z', 'v_z'],
+    #         'x_axis_idx': 0,  # x
+    #         'y_axis_idx': 4,  # y
+    #         'z_axis_idx': 8,  # z
+    #     }
+
+
 class DronePursuitEvasion20D(Dynamics):
     """
     20D Drone pursuit-evasion system: 1 evader, 1 pursuer.
@@ -3100,11 +3471,14 @@ class DronePursuitEvasion20D(Dynamics):
         self.control_range_ = control_range_.to(device)
         self.disturbance_range_ = disturbance_range_.to(device)
 
-        self.control_init = torch.tensor([0, 0, -self.Gz / self.thrust_max]).to(device)
-        self.disturbance_init = torch.tensor([0, 0, -self.Gz / self.thrust_max]).to(device)
+        self.control_init = torch.tensor([0, 0, (-self.Gz * self.mass) / (self.thrust_max * self.k_T)]).to(device)
+        self.disturbance_init = torch.tensor([0, 0, (-self.Gz * self.mass) / (self.thrust_max * self.k_T)]).to(device)
 
-        self.eps_var_control = torch.tensor([self.max_torque, self.max_torque, self.thrust_max]).to(device)  
-        self.eps_var_disturbance = torch.tensor([self.max_torque, self.max_torque, self.thrust_max]).to(device)  
+        # self.eps_var_control = torch.tensor([self.max_torque, self.max_torque, self.thrust_max]).to(device)  
+        # self.eps_var_disturbance = torch.tensor([self.max_torque, self.max_torque, self.thrust_max]).to(device)  
+
+        self.eps_var_control = torch.tensor([self.control_max, self.control_max, self.thrust_max]).to(device)  
+        self.eps_var_disturbance = torch.tensor([self.control_max, self.control_max, self.thrust_max]).to(device)  
 
     def dsdt(self, state, control, disturbance):
         dsdt = torch.zeros_like(state)
@@ -3123,7 +3497,7 @@ class DronePursuitEvasion20D(Dynamics):
         # Velocity derivatives (with evader control, disturbance, and drag terms)
         dsdt[..., 1] = -self.Gz * torch.tan(state[..., 2]) - self.c_x * state[..., 1]  # v̇1_x = g * tan(θ1_x) - c_x * v1_x
         dsdt[..., 5] = -self.Gz * torch.tan(state[..., 6]) - self.c_y * state[..., 5]  # v̇1_y = g * tan(θ1_y) - c_y * v1_y
-        dsdt[..., 9] = self.k_T / self.mass * self.thrust_max * control[..., 2] + self.Gz  # v1_z_dot = T1_z - g
+        dsdt[..., 9] = (self.k_T / self.mass) * self.thrust_max * control[..., 2] + self.Gz  # v1_z_dot = T1_z - g
         
         # Angle derivatives
         dsdt[..., 2] = state[..., 3] - self.d1 * state[..., 2]  # θ1_x_dot = ω1_x - d1 * θ1_x
@@ -3142,7 +3516,7 @@ class DronePursuitEvasion20D(Dynamics):
         # Velocity derivatives (with pursuer control, disturbance, and drag terms)
         dsdt[..., 11] = -self.Gz * torch.tan(state[..., 12]) - self.c_x * state[..., 11]  # v̇2_x = g * tan(θ2_x) - c_x * v2_x
         dsdt[..., 15] = -self.Gz * torch.tan(state[..., 16]) - self.c_y * state[..., 15]  # v̇2_y = g * tan(θ2_y) - c_y * v2_y
-        dsdt[..., 19] = self.k_T / self.mass * self.thrust_max * disturbance[..., 2] + self.Gz  # v2_z_dot = T2_z - g
+        dsdt[..., 19] = (self.k_T / self.mass) * self.thrust_max * disturbance[..., 2] + self.Gz  # v2_z_dot = T2_z - g
         
         # Angle derivatives
         dsdt[..., 12] = state[..., 13] - self.d1 * state[..., 12]  # θ2_x_dot = ω2_x - d1 * θ2_x
@@ -3202,23 +3576,23 @@ class DronePursuitEvasion20D(Dynamics):
             # Evader tries to avoid capture (minimize value function)
             ham += self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega1[..., 0])  # S1_x
             ham += self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega1[..., 1])  # S1_y
-            ham += self.k_T / self.mass * self.thrust_max * torch.where(dVdv1[..., 2] > 0, self.control_max, 0.25) * torch.abs(dVdv1[..., 2])  # T1_z
+            ham += (self.k_T / self.mass) * self.thrust_max * torch.where(dVdv1[..., 2] > 0, self.control_max, 0.25) * torch.abs(dVdv1[..., 2])  # T1_z
             
             # Pursuer tries to capture (maximize value function)
             ham -= self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega2[..., 0])  # S2_x
             ham -= self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega2[..., 1])  # S2_y
-            ham -= self.k_T / self.mass * self.thrust_max * torch.where(dVdv2[..., 2] < 0, self.control_max, 0.25) * torch.abs(dVdv2[..., 2])  # T2_z
+            ham -= (self.k_T / self.mass) * self.thrust_max * torch.where(dVdv2[..., 2] < 0, self.control_max, 0.25) * torch.abs(dVdv2[..., 2])  # T2_z
 
         elif self.set_mode == 'reach':
             # Evader tries to reach target (maximize value function)
             ham -= self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega1[..., 0])  # S1_x
             ham -= self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega1[..., 1])  # S1_y
-            ham -= self.k_T / self.mass * self.thrust_max * torch.where(dVdv1[..., 2] > 0, self.control_max, 0.25) * torch.abs(dVdv1[..., 2])  # T1_z
+            ham -= (self.k_T / self.mass) * self.thrust_max * torch.where(dVdv1[..., 2] > 0, self.control_max, 0.25) * torch.abs(dVdv1[..., 2])  # T1_z
             
             # Pursuer tries to prevent reaching (minimize value function)
             ham += self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega2[..., 0])  # S2_x
             ham += self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega2[..., 1])  # S2_y
-            ham += self.k_T / self.mass * self.thrust_max * torch.where(dVdv2[..., 2] > 0, self.control_max, 0.25) * torch.abs(dVdv2[..., 2])  # T2_z
+            ham += (self.k_T / self.mass) * self.thrust_max * torch.where(dVdv2[..., 2] > 0, self.control_max, 0.25) * torch.abs(dVdv2[..., 2])  # T2_z
         
         return ham
 
@@ -4052,7 +4426,7 @@ class DronePursuitEvasionPlanar12D(Dynamics):
         
         # Velocity derivatives (with evader control, disturbance, and drag terms)
         dsdt[..., 1] = -self.Gz * torch.tan(state[..., 2]) - self.c_x * state[..., 1]  # v̇1_x = g * tan(θ1_x) - c_x * v1_x
-        dsdt[..., 5] = self.k_T / self.mass * self.thrust_max * control[..., 1] + self.Gz  # v1_z_dot = T1_z - g
+        dsdt[..., 5] = (self.k_T / self.mass) * self.thrust_max * control[..., 1] + self.Gz  # v1_z_dot = T1_z - g
         
         # Angle derivatives
         dsdt[..., 2] = state[..., 3] - self.d1 * state[..., 2]  # θ1_x_dot = ω1_x - d1 * θ1_x
@@ -4067,7 +4441,7 @@ class DronePursuitEvasionPlanar12D(Dynamics):
         
         # Velocity derivatives (with pursuer control, disturbance, and drag terms)
         dsdt[..., 7] = -self.Gz * torch.tan(state[..., 8]) - self.c_x * state[..., 7]  # v̇2_x = g * tan(θ2_x) - c_x * v2_x
-        dsdt[..., 11] = self.k_T / self.mass * self.thrust_max * disturbance[..., 1] + self.Gz  # v2_z_dot = T2_z - g
+        dsdt[..., 11] = (self.k_T / self.mass) * self.thrust_max * disturbance[..., 1] + self.Gz  # v2_z_dot = T2_z - g
         
         # Angle derivatives
         dsdt[..., 8] = state[..., 9] - self.d1 * state[..., 8]  # θ2_x_dot = ω2_x - d1 * θ2_x
@@ -4118,20 +4492,20 @@ class DronePursuitEvasionPlanar12D(Dynamics):
         if self.set_mode in ['avoid', 'avoid_flipped']:
             # Evader tries to avoid capture (minimize value function)
             ham += self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega1)  # S1_x
-            ham += self.k_T / self.mass * self.thrust_max * torch.where(dVdv1[..., 1] > 0, self.control_max, 0.25) * torch.abs(dVdv1[..., 1])  # T1_z
+            ham += (self.k_T / self.mass) * self.thrust_max * torch.where(dVdv1[..., 1] > 0, self.control_max, 0.25) * torch.abs(dVdv1[..., 1])  # T1_z
             
             # Pursuer tries to capture (maximize value function)
             ham -= self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega2)  # S2_x
-            ham -= self.k_T / self.mass * self.thrust_max * torch.where(dVdv2[..., 1] < 0, self.control_max, 0.25) * torch.abs(dVdv2[..., 1])  # T2_z
+            ham -= (self.k_T / self.mass) * self.thrust_max * torch.where(dVdv2[..., 1] < 0, self.control_max, 0.25) * torch.abs(dVdv2[..., 1])  # T2_z
 
         elif self.set_mode == 'reach':
             # Evader tries to reach target (maximize value function)
             ham -= self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega1)  # S1_x
-            ham -= self.k_T / self.mass * self.thrust_max * torch.where(dVdv1[..., 1] > 0, self.control_max, 0.25) * torch.abs(dVdv1[..., 1])  # T1_z
+            ham -= (self.k_T / self.mass) * self.thrust_max * torch.where(dVdv1[..., 1] > 0, self.control_max, 0.25) * torch.abs(dVdv1[..., 1])  # T1_z
             
             # Pursuer tries to prevent reaching (minimize value function)
             ham += self.n0 * self.max_torque * self.control_max * torch.abs(dVdomega2)  # S2_x
-            ham += self.k_T / self.mass * self.thrust_max * torch.where(dVdv2[..., 1] > 0, self.control_max, 0.25) * torch.abs(dVdv2[..., 1])  # T2_z
+            ham += (self.k_T / self.mass) * self.thrust_max * torch.where(dVdv2[..., 1] > 0, self.control_max, 0.25) * torch.abs(dVdv2[..., 1])  # T2_z
         
         return ham
 
@@ -4443,7 +4817,7 @@ class Quadrotor(Dynamics):
         self.arm_l = 0.17
         self.CT = 1
         self.CM = 0.016
-        self.Gz = -9.8
+        self.Gz = -9.81
 
         self.dwx_max = 8
         self.dwy_max = 8
