@@ -17,8 +17,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from crazyflie_interface_py.template_controller import TemplateController
 from deepreach.utils.modules import SingleBVPNet
-from deepreach.dynamics import DronePursuitEvasion20D
-from deepreach import dynamics
+from deepreach.dynamics.dynamics import DronePursuitEvasion20D
+from deepreach.dynamics import dynamics
 from visualization_msgs.msg import Marker
 from geometry_msgs.msg import Point
 
@@ -31,20 +31,27 @@ else:
     device = torch.device("cpu")
 
 # Model path - update this to your actual 20D model path
-MODEL_PATH = "/mounted_volume/ros2_ws/src/crazyflie_interface/scripts/dr_models/DronePursuitEvasion20D_MPC_halfellipse"
 
 # numpy logging only 2 digits
 np.set_printoptions(precision=2, suppress=True, floatmode='fixed')
 
 MODE = ["hover", "deepreach"][1]  # Default to deepreach mode
-GHOST_AGENT = ["pursuer", "evader", "both"][-1]
+GHOST_AGENT = ["pursuer", "evader", "both"][2]
 GHOST_CONTROL_MODE = ["hover", "circle", "deepreach"][2]  # How to control the ghost agent (NOTE only when GHOST_AGENT is not "both")
-INIT_SETUP = 6
+INIT_SETUP = 5
 LOOKBACK_TIME = 1. # deepreach
 
-ARENA_FILTERING = True # Whether to use add'l value fn to contain agents (MODE = "deepreach" only)
-ARENA_MODEL_PATH = "/mounted_volume/ros2_ws/src/crazyflie_interface/scripts/dr_models/Drone10D_MPC_Box"
-ARENA_SAFETY_THRESHOLD = 0.1  # Threshold for applying safety control
+TWOPLAYER_MODEL_NAME = "20d_MPC_halfellipse_omega2"
+
+TWOPLAYER_MODEL_FLIPPED_NAME = "20d_MPC_halfellipse_flipped_omega2"
+APPLY_FLIP_STRATEGY = True # Whether to apply the flipped strategy for the pursuer
+FLIP_VALUE_THRESHOLD = 0.05 # If value fn > threshold, switch to flipped strategy
+
+
+USE_PURSUER_SAFETY_FILTER = True # Use add'l value fn to contain agents (MODE = "deepreach" only)
+USE_EVADER_SAFETY_FILTER = True
+SINGLEAGENT_MODEL_NAME = "Drone10D_2omega_box"
+ARENA_SAFETY_THRESHOLD = 0.02  # Threshold for applying safety control
 
 class DeepReach20DControllerGhost(TemplateController):
     def __init__(self, node_name='deepreach_20d_controller_ghost'):
@@ -140,8 +147,9 @@ class DeepReach20DControllerGhost(TemplateController):
             self.pursuer_marker.pose.position.z = float(self.ghost_state_pursuer[8].item())
             self.pursuer_marker.id = 1
             self.marker_pub.publish(self.pursuer_marker)
-
-        with open(os.path.join(MODEL_PATH, "orig_opt.pickle"), 'rb') as f:
+        
+        twoplayer_model_path = f"deepreach/saved_models/Drones20D/{TWOPLAYER_MODEL_NAME}"
+        with open(os.path.join(twoplayer_model_path, "orig_opt.pickle"), 'rb') as f:
             self.orig_opt = pickle.load(f)
         
         # Initialize DeepReach components if using deepreach mode
@@ -155,16 +163,34 @@ class DeepReach20DControllerGhost(TemplateController):
                              final_layer_factor=1., hidden_features=self.orig_opt.num_nl, num_hidden_layers=self.orig_opt.num_hl,
                              periodic_transform_fn=self.dynamics.periodic_transform_fn)
 
-            checkpoint = torch.load(os.path.join(MODEL_PATH, "model_final.pth"), map_location=device, weights_only=True)
+            checkpoint = torch.load(os.path.join(twoplayer_model_path, "training/checkpoints/model_final.pth"), map_location=device, weights_only=True)
             self.model.load_state_dict(checkpoint["model"])
             self.model.to(device)
             self.model.eval()
-            self.get_logger().info("DeepReach 20D model loaded successfully, modelpath = " + MODEL_PATH)
+            self.get_logger().info("DeepReach 20D model loaded successfully, modelpath = " + twoplayer_model_path)
+            
+            if APPLY_FLIP_STRATEGY:
+                twoplayer_flipped_model_path = f"deepreach/saved_models/Drones20D/{TWOPLAYER_MODEL_FLIPPED_NAME}"
+                with open(os.path.join(twoplayer_flipped_model_path, "orig_opt.pickle"), 'rb') as f:
+                    self.orig_opt_flipped = pickle.load(f)
+                dynamics_class = getattr(dynamics, self.orig_opt_flipped.dynamics_class)
+                self.dynamics_flipped = dynamics_class(**{argname: getattr(self.orig_opt_flipped, argname)
+                            for argname in inspect.signature(dynamics_class).parameters.keys() if argname != 'self'})
+                
+                self.model_flipped = SingleBVPNet(in_features=self.dynamics_flipped.input_dim, out_features=1, type=self.orig_opt_flipped.model, mode=self.orig_opt_flipped.model_mode,
+                                final_layer_factor=1., hidden_features=self.orig_opt_flipped.num_nl, num_hidden_layers=self.orig_opt_flipped.num_hl,
+                                periodic_transform_fn=self.dynamics_flipped.periodic_transform_fn)
 
-            if ARENA_FILTERING:
+                checkpoint = torch.load(os.path.join(twoplayer_flipped_model_path, "training/checkpoints/model_final.pth"), map_location=device, weights_only=True)
+                self.model_flipped.load_state_dict(checkpoint["model"])
+                self.model_flipped.to(device)
+                self.model_flipped.eval()
+                self.get_logger().info("DeepReach 20D model flipped loaded successfully, modelpath = " + twoplayer_flipped_model_path)                
 
-                self.get_logger().info("Loading arena containment model from " + ARENA_MODEL_PATH)
-                with open(os.path.join(ARENA_MODEL_PATH, "orig_opt.pickle"), 'rb') as f:
+            if USE_PURSUER_SAFETY_FILTER or USE_EVADER_SAFETY_FILTER:
+                safety_model_path = os.path.join('deepreach/saved_models/Drone10D', SINGLEAGENT_MODEL_NAME)
+                self.get_logger().info("Loading arena containment model from " + safety_model_path)
+                with open(os.path.join(safety_model_path, "orig_opt.pickle"), 'rb') as f:
                     self.arena_orig_opt = pickle.load(f)
                 
                 dynamics_class = getattr(dynamics, self.arena_orig_opt.dynamics_class)
@@ -175,11 +201,11 @@ class DeepReach20DControllerGhost(TemplateController):
                                  final_layer_factor=1., hidden_features=self.arena_orig_opt.num_nl, num_hidden_layers=self.arena_orig_opt.num_hl,
                                  periodic_transform_fn=self.arena_dynamics.periodic_transform_fn)
 
-                checkpoint = torch.load(os.path.join(ARENA_MODEL_PATH, "training/checkpoints/model_final.pth"), map_location=device, weights_only=True)
+                checkpoint = torch.load(os.path.join(safety_model_path, "training/checkpoints/model_final.pth"), map_location=device, weights_only=True)
                 self.arena_model.load_state_dict(checkpoint["model"])
                 self.arena_model.to(device)
                 self.arena_model.eval()
-                self.get_logger().info("Arena containment model loaded successfully, modelpath = " + ARENA_MODEL_PATH)
+                self.get_logger().info("Arena containment model loaded successfully, modelpath = " + safety_model_path)
         
         self.start_controller()
         self.iteration = 0
@@ -320,8 +346,8 @@ class DeepReach20DControllerGhost(TemplateController):
             # Convert to tensor for DeepReach
             drone_20d_state_tensor = torch.tensor(drone_20d_state, dtype=torch.float32, device=device)
 
-            self.get_logger().info(f"Evader state: {drone_20d_state[0:10]}")
-            self.get_logger().info(f"Pursuer state: {drone_20d_state[10:20]}")
+            # self.get_logger().info(f"Evader state: {drone_20d_state[0:10]}")
+            # self.get_logger().info(f"Pursuer state: {drone_20d_state[10:20]}")
             
             # Add time dimension for DeepReach input: [time, state]
             time_tensor = torch.tensor([LOOKBACK_TIME], dtype=torch.float32, device=device)
@@ -359,68 +385,82 @@ class DeepReach20DControllerGhost(TemplateController):
             dVdv2_z = dv[..., 1:][0, 19].item()  # gradient w.r.t. v2_z
             #self.get_logger().info(f"Gradients - dVdv1_z: {dVdv1_z:.4f}, dVdv2_z: {dVdv2_z:.4f}")
 
+            if APPLY_FLIP_STRATEGY and value.item() > FLIP_VALUE_THRESHOLD:
+                # Compute gradients for flipped model
+                traj_policy_results_flipped = self.model_flipped(
+                    {"coords": self.dynamics_flipped.coord_to_input(deepreach_input)}
+                )
+                model_out_flipped = traj_policy_results_flipped["model_out"]
+                model_in_flipped = traj_policy_results_flipped["model_in"]
+                if model_out_flipped.dim() == 1:
+                    model_out_flipped = model_out_flipped.unsqueeze(0)
+                
+                dv_flipped = self.dynamics_flipped.io_to_dv(
+                    model_in_flipped,
+                    model_out_flipped.squeeze(dim=-1),
+                ).detach()
+
+                optimal_d_flipped = self.dynamics_flipped.optimal_disturbance(drone_20d_state_tensor, dv_flipped[..., 1:])
+
+                optimal_d = optimal_d_flipped  # Switch to flipped disturbance
+                self.get_logger().info(f"Using flipped pursuer strategy (value = {value.item()})")
+
             ## ARENA CONTAINMENT ##
 
-            if ARENA_FILTERING:
-
-                evader_10d_state_tensor = torch.tensor(drone_20d_state[0:10], dtype=torch.float32, device=device)
-                pursuer_10d_state_tensor = torch.tensor(drone_20d_state[10:20], dtype=torch.float32, device=device)
-
+            if USE_EVADER_SAFETY_FILTER:
                 time_tensor = torch.tensor([LOOKBACK_TIME], dtype=torch.float32, device=device)
+                evader_10d_state_tensor = torch.tensor(drone_20d_state[0:10], dtype=torch.float32, device=device)
                 deepreach_arena_evader_input = torch.cat([time_tensor, evader_10d_state_tensor]).unsqueeze(0)  # [1, 11]
-                deepreach_arena_pursuer_input = torch.cat([time_tensor, pursuer_10d_state_tensor]).unsqueeze(0)  # [1, 11]
-                
-                arean_evader_results = self.arena_model(
+                arena_evader_results = self.arena_model(
                     {"coords": self.arena_dynamics.coord_to_input(deepreach_arena_evader_input)}
-                )
-                arean_pursuer_results = self.arena_model(
-                    {"coords": self.arena_dynamics.coord_to_input(deepreach_arena_pursuer_input)}
-                )
-                
-                arena_evader_model_out = arean_evader_results["model_out"]
-                arena_evader_model_in = arean_evader_results["model_in"]
-
-                arena_pursuer_model_out = arean_pursuer_results["model_out"]
-                arena_pursuer_model_in = arean_pursuer_results["model_in"]
-                
+                )                
+                arena_evader_model_out = arena_evader_results["model_out"]
+                arena_evader_model_in = arena_evader_results["model_in"]      
                 # Ensure proper shape for dynamics calculations
                 if arena_evader_model_out.dim() == 1:
                     arena_evader_model_out = arena_evader_model_out.unsqueeze(0)
 
-                if arena_pursuer_model_out.dim() == 1:
-                    arena_pursuer_model_out = arena_pursuer_model_out.unsqueeze(0)
-                
                 dv_arena_evader = self.arena_dynamics.io_to_dv(
                     arena_evader_model_in,
                     arena_evader_model_out.squeeze(dim=-1),
                 ).detach()
-
-                dv_arena_pursuer = self.arena_dynamics.io_to_dv(
-                    arena_pursuer_model_in,
-                    arena_pursuer_model_out.squeeze(dim=-1),
-                ).detach()
-
                 value_arena_evader = self.arena_dynamics.io_to_value(
                     arena_evader_model_in,
                     arena_evader_model_out.squeeze(dim=-1),
                 ).detach()
-
+          
+                box_ellx_evader = self.arena_dynamics.boundary_fn(evader_10d_state_tensor).detach()
+                # Use gradient to compute optimal control and disturbance
+                safe_u_evader = self.arena_dynamics.optimal_control(evader_10d_state_tensor, dv_arena_evader[..., 1:])
+                # Apply safety control if near or outside boundary
+                if value_arena_evader.item() < ARENA_SAFETY_THRESHOLD or box_ellx_evader.item() < 0.0:
+                    self.get_logger().info(f"Evader near/outside arena boundary (value_arena = {value_arena_evader.item()}), applying containment policy")
+                    optimal_u = safe_u_evader
+            
+            if USE_PURSUER_SAFETY_FILTER:
+                time_tensor = torch.tensor([LOOKBACK_TIME], dtype=torch.float32, device=device)
+                pursuer_10d_state_tensor = torch.tensor(drone_20d_state[10:20], dtype=torch.float32, device=device)
+                deepreach_arena_pursuer_input = torch.cat([time_tensor, pursuer_10d_state_tensor]).unsqueeze(0)  # [1, 11]
+                arena_pursuer_results = self.arena_model(
+                    {"coords": self.arena_dynamics.coord_to_input(deepreach_arena_pursuer_input)}
+                )            
+                arena_pursuer_model_out = arena_pursuer_results["model_out"]
+                arena_pursuer_model_in = arena_pursuer_results["model_in"]
+                # Ensure proper shape for dynamics calculations
+                if arena_pursuer_model_out.dim() == 1:
+                    arena_pursuer_model_out = arena_pursuer_model_out.unsqueeze(0)
+                
+                dv_arena_pursuer = self.arena_dynamics.io_to_dv(
+                    arena_pursuer_model_in,
+                    arena_pursuer_model_out.squeeze(dim=-1),
+                ).detach()
                 value_arena_pursuer = self.arena_dynamics.io_to_value(
                     arena_pursuer_model_in,
                     arena_pursuer_model_out.squeeze(dim=-1),
                 ).detach()
 
-                box_ellx_evader = self.arena_dynamics.boundary_fn(evader_10d_state_tensor).detach()
                 box_ellx_pursuer = self.arena_dynamics.boundary_fn(pursuer_10d_state_tensor).detach()
-                
-                # Use gradient to compute optimal control and disturbance
-                safe_u_evader = self.arena_dynamics.optimal_control(evader_10d_state_tensor, dv_arena_evader[..., 1:])
                 safe_u_pursuer = self.arena_dynamics.optimal_control(pursuer_10d_state_tensor, dv_arena_pursuer[..., 1:])
-
-                # Apply safety control if near or outside boundary
-                if value_arena_evader.item() < ARENA_SAFETY_THRESHOLD or box_ellx_evader.item() < 0.0:
-                    self.get_logger().info(f"Evader near/outside arena boundary (value_arena = {value_arena_evader.item()}), applying containment policy")
-                    optimal_u = safe_u_evader
                 
                 if value_arena_pursuer.item() < ARENA_SAFETY_THRESHOLD or box_ellx_pursuer.item() < 0.0:
                     self.get_logger().info(f"Pursuer near/outside arena boundary (value_arena = {value_arena_pursuer.item()}), applying containment policy")
@@ -444,10 +484,10 @@ class DeepReach20DControllerGhost(TemplateController):
                 self.dynamics.thrust_max * optimal_d[0, 2].item()   # T2_z
             ])
 
-            self.get_logger().info(f"Evader control: {evader_control}")
-            self.get_logger().info(f"Pursuer control: {pursuer_control}")
-            self.get_logger().info(f"value: {value.item():.4f}")
-            self.get_logger().info(f"ellx: {ellx.item():.4f}")
+            # self.get_logger().info(f"Evader control: {evader_control}")
+            # self.get_logger().info(f"Pursuer control: {pursuer_control}")
+            # self.get_logger().info(f"value: {value.item():.4f}")
+            # self.get_logger().info(f"ellx: {ellx.item():.4f}")
 
             # Apply control limits for safety     # T2_z
             # FIXME: Add in that we want to control yaw again
@@ -567,15 +607,16 @@ class DeepReach20DControllerGhost(TemplateController):
                 )
 
             if self.iteration % 5 == 0:  # Log every 50 iterations (about once per second)
-                self.get_logger().info(f"DeepReach 20D Mode - Iteration {self.iteration}: Current positions for {self.nbr_robots} robots")
+                pass
+                # self.get_logger().info(f"DeepReach 20D Mode - Iteration {self.iteration}: Current positions for {self.nbr_robots} robots")
 
-                self.get_logger().info(f"Evader actual position: [{actual_pos1[0]:.2f}, {actual_pos1[1]:.2f}, {actual_pos1[2]:.2f}]")
-                self.get_logger().info(f"Evader actual velocity: [{actual_vel1[0]:.2f}, {actual_vel1[1]:.2f}, {actual_vel1[2]:.2f}]")
-                self.get_logger().info(f"Pursuer actual position: [{actual_pos2[0]:.2f}, {actual_pos2[1]:.2f}, {actual_pos2[2]:.2f}]")
-                self.get_logger().info(f"Pursuer actual velocity: [{actual_vel2[0]:.2f}, {actual_vel2[1]:.2f}, {actual_vel2[2]:.2f}]")
+                # self.get_logger().info(f"Evader actual position: [{actual_pos1[0]:.2f}, {actual_pos1[1]:.2f}, {actual_pos1[2]:.2f}]")
+                # self.get_logger().info(f"Evader actual velocity: [{actual_vel1[0]:.2f}, {actual_vel1[1]:.2f}, {actual_vel1[2]:.2f}]")
+                # self.get_logger().info(f"Pursuer actual position: [{actual_pos2[0]:.2f}, {actual_pos2[1]:.2f}, {actual_pos2[2]:.2f}]")
+                # self.get_logger().info(f"Pursuer actual velocity: [{actual_vel2[0]:.2f}, {actual_vel2[1]:.2f}, {actual_vel2[2]:.2f}]")
 
-                if self.first_collision_warning_time is not None or self.first_out_of_bounds_time is not None:
-                    self.get_logger().warn("Safety event detected - ending control loop")
+                # if self.first_collision_warning_time is not None or self.first_out_of_bounds_time is not None:
+                    # self.get_logger().warn("Safety event detected - ending control loop")
 
             log_entry = {
                 "timestamp": time.time() - self.start_time,  # Relative time in seconds
@@ -617,7 +658,7 @@ class DeepReach20DControllerGhost(TemplateController):
                             "timestamp": datetime.now().isoformat(),
                             "total_iterations": len(self.log_data),
                             "mode": MODE,
-                            "model_path": MODEL_PATH
+                            "model_path": TWOPLAYER_MODEL_NAME
                         },
                         "data": self.log_data
                     }, f, indent=2)

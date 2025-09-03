@@ -1,0 +1,3 @@
+[submodule "scripts/deepreach"]
+	path = scripts/deepreach
+	url = git@github.com:stonkens/deepreach_robustMPC.git
