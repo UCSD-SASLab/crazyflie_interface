@@ -38,20 +38,22 @@ np.set_printoptions(precision=2, suppress=True, floatmode='fixed')
 MODE = ["hover", "deepreach"][1]  # Default to deepreach mode
 GHOST_AGENT = ["pursuer", "evader", "both"][2]
 GHOST_CONTROL_MODE = ["hover", "circle", "deepreach"][2]  # How to control the ghost agent (NOTE only when GHOST_AGENT is not "both")
-INIT_SETUP = 5
+INIT_SETUP = 2
 LOOKBACK_TIME = 1. # deepreach
 
 TWOPLAYER_MODEL_NAME = "20d_MPC_halfellipse_omega2"
 
-TWOPLAYER_MODEL_FLIPPED_NAME = "20d_MPC_halfellipse_flipped_omega2"
-APPLY_FLIP_STRATEGY = True # Whether to apply the flipped strategy for the pursuer
-FLIP_VALUE_THRESHOLD = 0.05 # If value fn > threshold, switch to flipped strategy
-
+TWOPLAYER_MODEL_FOLLOW_NAME = "20d_MPC_halfellipse_flipped_omega2"
+APPLY_FOLLOW_STRATEGY = True # Whether to apply the follow strategy for the pursuer
+FOLLOW_VALUE_THRESHOLD = 0.05 # If value fn > threshold, switch to follow strategy
 
 USE_PURSUER_SAFETY_FILTER = True # Use add'l value fn to contain agents (MODE = "deepreach" only)
 USE_EVADER_SAFETY_FILTER = True
 SINGLEAGENT_MODEL_NAME = "Drone10D_2omega_box"
-ARENA_SAFETY_THRESHOLD = 0.02  # Threshold for applying safety control
+ARENA_SAFETY_THRESHOLD = 0.05  # Threshold for applying safety control
+
+LOAD_PRESOLVED_EVADER_TRAJ = True  # Whether to load a presolved trajectory for the evader agent
+PRESOLVED_EVADER_FILE = "EVADER_STATES_20drones_pursuerghost_ic2_20250903_205521.npz"  # File containing presolved evader trajectory
 
 class DeepReach20DControllerGhost(TemplateController):
     def __init__(self, node_name='deepreach_20d_controller_ghost'):
@@ -169,23 +171,23 @@ class DeepReach20DControllerGhost(TemplateController):
             self.model.eval()
             self.get_logger().info("DeepReach 20D model loaded successfully, modelpath = " + twoplayer_model_path)
             
-            if APPLY_FLIP_STRATEGY:
-                twoplayer_flipped_model_path = f"deepreach/saved_models/Drones20D/{TWOPLAYER_MODEL_FLIPPED_NAME}"
-                with open(os.path.join(twoplayer_flipped_model_path, "orig_opt.pickle"), 'rb') as f:
-                    self.orig_opt_flipped = pickle.load(f)
-                dynamics_class = getattr(dynamics, self.orig_opt_flipped.dynamics_class)
-                self.dynamics_flipped = dynamics_class(**{argname: getattr(self.orig_opt_flipped, argname)
+            if APPLY_FOLLOW_STRATEGY:
+                twoplayer_follow_model_path = f"deepreach/saved_models/Drones20D/{TWOPLAYER_MODEL_FOLLOW_NAME}"
+                with open(os.path.join(twoplayer_follow_model_path, "orig_opt.pickle"), 'rb') as f:
+                    self.orig_opt_follow = pickle.load(f)
+                dynamics_class = getattr(dynamics, self.orig_opt_follow.dynamics_class)
+                self.dynamics_follow = dynamics_class(**{argname: getattr(self.orig_opt_follow, argname)
                             for argname in inspect.signature(dynamics_class).parameters.keys() if argname != 'self'})
                 
-                self.model_flipped = SingleBVPNet(in_features=self.dynamics_flipped.input_dim, out_features=1, type=self.orig_opt_flipped.model, mode=self.orig_opt_flipped.model_mode,
-                                final_layer_factor=1., hidden_features=self.orig_opt_flipped.num_nl, num_hidden_layers=self.orig_opt_flipped.num_hl,
-                                periodic_transform_fn=self.dynamics_flipped.periodic_transform_fn)
+                self.model_follow = SingleBVPNet(in_features=self.dynamics_follow.input_dim, out_features=1, type=self.orig_opt_follow.model, mode=self.orig_opt_follow.model_mode,
+                                final_layer_factor=1., hidden_features=self.orig_opt_follow.num_nl, num_hidden_layers=self.orig_opt_follow.num_hl,
+                                periodic_transform_fn=self.dynamics_follow.periodic_transform_fn)
 
-                checkpoint = torch.load(os.path.join(twoplayer_flipped_model_path, "training/checkpoints/model_final.pth"), map_location=device, weights_only=True)
-                self.model_flipped.load_state_dict(checkpoint["model"])
-                self.model_flipped.to(device)
-                self.model_flipped.eval()
-                self.get_logger().info("DeepReach 20D model flipped loaded successfully, modelpath = " + twoplayer_flipped_model_path)                
+                checkpoint = torch.load(os.path.join(twoplayer_follow_model_path, "training/checkpoints/model_final.pth"), map_location=device, weights_only=True)
+                self.model_follow.load_state_dict(checkpoint["model"])
+                self.model_follow.to(device)
+                self.model_follow.eval()
+                self.get_logger().info("DeepReach 20D model follow loaded successfully, modelpath = " + twoplayer_follow_model_path)                
 
             if USE_PURSUER_SAFETY_FILTER or USE_EVADER_SAFETY_FILTER:
                 safety_model_path = os.path.join('deepreach/saved_models/Drone10D', SINGLEAGENT_MODEL_NAME)
@@ -206,6 +208,27 @@ class DeepReach20DControllerGhost(TemplateController):
                 self.arena_model.to(device)
                 self.arena_model.eval()
                 self.get_logger().info("Arena containment model loaded successfully, modelpath = " + safety_model_path)
+            
+        if LOAD_PRESOLVED_EVADER_TRAJ:
+            traj_data = np.load(PRESOLVED_EVADER_FILE)
+            self.presolved_evader_timestamps, self.presolved_evader_states = traj_data['timestamps'], traj_data['evader_full_states']
+
+            # Convolve angles to smooth out noise
+            window_size = 30
+            self.presolved_evader_states[:, 2] = np.convolve(self.presolved_evader_states[:, 2], np.ones(window_size)/window_size, mode='same') # pitch
+            self.presolved_evader_states[:, 3] = np.convolve(self.presolved_evader_states[:, 3], np.ones(window_size)/window_size, mode='same') # omega_x
+            self.presolved_evader_states[:, 6] = np.convolve(self.presolved_evader_states[:, 6], np.ones(window_size)/window_size, mode='same') # roll
+            self.presolved_evader_states[:, 7] = np.convolve(self.presolved_evader_states[:, 7], np.ones(window_size)/window_size, mode='same') # omega_y
+
+            # Clamp angles to learned state bounds
+            angle_max, angular_vel_max = 0.35, 2.0
+            self.presolved_evader_states[:, 2] = np.clip(self.presolved_evader_states[:, 2], -angle_max, angle_max)  # pitch
+            self.presolved_evader_states[:, 3] = np.clip(self.presolved_evader_states[:, 3], -angular_vel_max, angular_vel_max)  # omega_x
+            self.presolved_evader_states[:, 6] = np.clip(self.presolved_evader_states[:, 6], -angle_max, angle_max)  # roll
+            self.presolved_evader_states[:, 7] = np.clip(self.presolved_evader_states[:, 7], -angular_vel_max, angular_vel_max)  # omega_y
+
+            # Convert to tensor
+            self.presolved_evader_states = torch.from_numpy(self.presolved_evader_states).float()
         
         self.start_controller()
         self.iteration = 0
@@ -273,7 +296,7 @@ class DeepReach20DControllerGhost(TemplateController):
             
             # Convert quaternion to Euler angles to get roll and pitch
             euler_angles = rowan.to_euler(quat, "xyz")
-            # The euler angles here are flipped compared to the drone convention
+            # The euler angles here are follow compared to the drone convention
             roll = -euler_angles[0]   # θ_y  (post sign change: +roll = positive y acceleration)
             pitch = euler_angles[1]  # θ_x  (without sign change: +pitch = positive x acceleration)
                 
@@ -300,9 +323,10 @@ class DeepReach20DControllerGhost(TemplateController):
                     
                     # Convert quaternion to Euler angles to get roll and pitch
                     euler_angles = rowan.to_euler(quat, "xyz")
-                    # The euler angles here are flipped compared to the drone convention
+                    # The euler angles here are follow compared to the drone convention
                     roll = -euler_angles[0]   # θ_y  (post sign change: +roll = positive y acceleration)
                     pitch = euler_angles[1]  # θ_x  (without sign change: +pitch = positive x acceleration)
+                    yaw = euler_angles[2]    # θ_z
                 
                 if GHOST_AGENT == "pursuer":  # Live Drone 1 (evader)
                     # [x1, v1_x, θ1_x, ω1_x, y1, v1_y, θ1_y, ω1_y, z1, v1_z]
@@ -385,25 +409,25 @@ class DeepReach20DControllerGhost(TemplateController):
             dVdv2_z = dv[..., 1:][0, 19].item()  # gradient w.r.t. v2_z
             #self.get_logger().info(f"Gradients - dVdv1_z: {dVdv1_z:.4f}, dVdv2_z: {dVdv2_z:.4f}")
 
-            if APPLY_FLIP_STRATEGY and value.item() > FLIP_VALUE_THRESHOLD:
-                # Compute gradients for flipped model
-                traj_policy_results_flipped = self.model_flipped(
-                    {"coords": self.dynamics_flipped.coord_to_input(deepreach_input)}
+            if APPLY_FOLLOW_STRATEGY and value.item() > FOLLOW_VALUE_THRESHOLD:
+                # Compute gradients for follow model
+                traj_policy_results_follow = self.model_follow(
+                    {"coords": self.dynamics_follow.coord_to_input(deepreach_input)}
                 )
-                model_out_flipped = traj_policy_results_flipped["model_out"]
-                model_in_flipped = traj_policy_results_flipped["model_in"]
-                if model_out_flipped.dim() == 1:
-                    model_out_flipped = model_out_flipped.unsqueeze(0)
+                model_out_follow = traj_policy_results_follow["model_out"]
+                model_in_follow = traj_policy_results_follow["model_in"]
+                if model_out_follow.dim() == 1:
+                    model_out_follow = model_out_follow.unsqueeze(0)
                 
-                dv_flipped = self.dynamics_flipped.io_to_dv(
-                    model_in_flipped,
-                    model_out_flipped.squeeze(dim=-1),
+                dv_follow = self.dynamics_follow.io_to_dv(
+                    model_in_follow,
+                    model_out_follow.squeeze(dim=-1),
                 ).detach()
 
-                optimal_d_flipped = self.dynamics_flipped.optimal_disturbance(drone_20d_state_tensor, dv_flipped[..., 1:])
+                optimal_d_follow = self.dynamics_follow.optimal_disturbance(drone_20d_state_tensor, dv_follow[..., 1:])
 
-                optimal_d = optimal_d_flipped  # Switch to flipped disturbance
-                self.get_logger().info(f"Using flipped pursuer strategy (value = {value.item()})")
+                optimal_d = optimal_d_follow  # Switch to follow disturbance
+                self.get_logger().info(f"Using follow pursuer strategy (value = {value.item()})")
 
             ## ARENA CONTAINMENT ##
 
@@ -434,7 +458,7 @@ class DeepReach20DControllerGhost(TemplateController):
                 safe_u_evader = self.arena_dynamics.optimal_control(evader_10d_state_tensor, dv_arena_evader[..., 1:])
                 # Apply safety control if near or outside boundary
                 if value_arena_evader.item() < ARENA_SAFETY_THRESHOLD or box_ellx_evader.item() < 0.0:
-                    self.get_logger().info(f"Evader near/outside arena boundary (value_arena = {value_arena_evader.item()}), applying containment policy")
+                    # self.get_logger().info(f"Evader near/outside arena boundary (value_arena = {value_arena_evader.item()}), applying containment policy")
                     optimal_u = safe_u_evader
             
             if USE_PURSUER_SAFETY_FILTER:
@@ -463,7 +487,7 @@ class DeepReach20DControllerGhost(TemplateController):
                 safe_u_pursuer = self.arena_dynamics.optimal_control(pursuer_10d_state_tensor, dv_arena_pursuer[..., 1:])
                 
                 if value_arena_pursuer.item() < ARENA_SAFETY_THRESHOLD or box_ellx_pursuer.item() < 0.0:
-                    self.get_logger().info(f"Pursuer near/outside arena boundary (value_arena = {value_arena_pursuer.item()}), applying containment policy")
+                    # self.get_logger().info(f"Pursuer near/outside arena boundary (value_arena = {value_arena_pursuer.item()}), applying containment policy")
                     optimal_d = safe_u_pursuer
 
             ## CONVERT DR CONTROLS ##
@@ -548,10 +572,19 @@ class DeepReach20DControllerGhost(TemplateController):
             
             elif GHOST_AGENT == "both":
                 f = self.dynamics.dsdt(drone_20d_state_tensor, optimal_u, optimal_d)
+                
                 if self.in_flight:
                     next_state = drone_20d_state_tensor + self.dt * f.squeeze(0)
                     self.ghost_state_evader = next_state[0:10].cpu().numpy()  # Compute next evader state
                     self.ghost_state_pursuer = next_state[10:20].cpu().numpy()  # Compute next pursuer state
+
+                    if LOAD_PRESOLVED_EVADER_TRAJ:
+                        if self.iteration < len(self.presolved_evader_states):
+                            self.get_logger().info(f"Loading presolved evader state with shape {self.presolved_evader_states[self.iteration].shape}")
+                            self.ghost_state_evader = self.presolved_evader_states[self.iteration]
+                        else:
+                            self.ghost_state_evader = self.presolved_evader_states[-1]
+
                 if self.iteration % 5 == 0:
                     self.evader_marker.pose.position.x = float(self.ghost_state_evader[0].item())
                     self.evader_marker.pose.position.y = float(self.ghost_state_evader[4].item())
@@ -561,15 +594,18 @@ class DeepReach20DControllerGhost(TemplateController):
                     self.pursuer_marker.pose.position.y = float(self.ghost_state_pursuer[4].item())
                     self.pursuer_marker.pose.position.z = float(self.ghost_state_pursuer[8].item())
                     self.marker_pub.publish(self.pursuer_marker)
-            
-            
-            # TODO AY: Add in a marker for the ghost drone in RViz to visualize the ghost position
-                # We want to calculate (if necessary the updated ghost state)
+
             else:
                 raise ValueError(f"Unknown GHOST_AGENT: {GHOST_AGENT}")
             
             # Apply final safety limits
             u[:, :2] = np.clip(u[:, :2], -0.3, 0.3)  # roll, pitch limits
+
+            if GHOST_AGENT != "both":
+                # We want to keep the yaw at 0, so yaw rate is an proporitional controller to keep yaw at 0
+                yawrate = 2.0 * yaw
+                u[:, 2] = yawrate
+
             u[:, 3] = np.clip(u[:, 3], 4.0, 16.0)    # thrust limits
                 
         else:

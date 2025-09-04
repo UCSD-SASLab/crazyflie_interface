@@ -13,10 +13,12 @@ from std_msgs.msg import Bool
 from crazyflie_interface.msg import StateStamped
 from functools import partial
 import rowan
+from collections import deque
 
 MODE = "both"
 CONTROL_MODE = "control"   # "full_state" for 12d or "control" for 20d only
-ANGULAR_VEL_CALC_METHOD = ["direct", "finite_difference"][0]  # How to get angular velocity from orientation
+ANGULAR_VEL_CALC_METHOD = ["direct", "direct_averaged", "finite_difference"][1]  # How to get angular velocity from orientation
+AVERAGE_WINDOW_SIZE = 5  # Only used if ANGULAR_VEL_CALC_METHOD is "direct_averaged"
 
 
 class CfInterface(Node):
@@ -53,6 +55,10 @@ class CfInterface(Node):
         self.zero_control_out_msg.linear.y = 0.0
         self.zero_control_out_msg.linear.z = 0.0
         self.zero_control_out_msg.angular.z = 0.0
+
+        # Setup queue if using direct_averaged method
+        if ANGULAR_VEL_CALC_METHOD == "direct_averaged":
+            self.omega_queues = {uri: deque(maxlen=AVERAGE_WINDOW_SIZE) for uri in self.uris}
 
         # State sub/pub
         self.get_logger().info(f"Setting up state publisher for {self.crazyflie_names}")
@@ -228,6 +234,16 @@ class CfInterface(Node):
                     omega = (euler_xyz - self.last_euler_state[uri]) / (time_now - self.last_time[uri])  # Assuming 100 Hz update rate
                 self.last_euler_state[uri] = euler_xyz
                 self.last_time[uri] = time_now
+            elif ANGULAR_VEL_CALC_METHOD == "direct_averaged":
+                omega_curr = np.array([msg.twist.twist.angular.x, msg.twist.twist.angular.y, msg.twist.twist.angular.z])
+                if self.backend == "sim":
+                    omega_curr = omega_curr
+                else:
+                    omega_curr = omega_curr * np.pi / 180.0
+                
+                self.omega_queues[uri].append(omega_curr)
+                omega = np.mean(np.stack(self.omega_queues[uri]), axis=0)
+            
             else: 
                 raise NotImplementedError("Angular velocity calculation method not yet supported: {}".format(ANGULAR_VEL_CALC_METHOD))
             
