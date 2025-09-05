@@ -18,8 +18,9 @@ from collections import deque
 MODE = "both"
 CONTROL_MODE = "control"   # "full_state" for 12d or "control" for 20d only
 ANGULAR_VEL_CALC_METHOD = ["direct", "direct_averaged", "finite_difference"][1]  # How to get angular velocity from orientation
-AVERAGE_WINDOW_SIZE = 5  # Only used if ANGULAR_VEL_CALC_METHOD is "direct_averaged"
-
+AVERAGE_WINDOW_SIZE = 30  # Only used if ANGULAR_VEL_CALC_METHOD is "direct_averaged"
+CLIP_THETA_OMEGA = True # clips thetas to
+ANGLE_MAX, ANGLE_VEL_MAX = 0.35, 2.0
 
 class CfInterface(Node):
     def __init__(self, node_name='cf_interface'):
@@ -232,20 +233,36 @@ class CfInterface(Node):
                 else:
                     # convert quaternion to euler
                     omega = (euler_xyz - self.last_euler_state[uri]) / (time_now - self.last_time[uri])  # Assuming 100 Hz update rate
+                
+                if CLIP_THETA_OMEGA:
+                    euler_xyz[0:2] = np.clip(euler_xyz[0:2], -ANGLE_MAX, ANGLE_MAX)
+
                 self.last_euler_state[uri] = euler_xyz
                 self.last_time[uri] = time_now
+
             elif ANGULAR_VEL_CALC_METHOD == "direct_averaged":
                 omega_curr = np.array([msg.twist.twist.angular.x, msg.twist.twist.angular.y, msg.twist.twist.angular.z])
                 if self.backend == "sim":
                     omega_curr = omega_curr
                 else:
                     omega_curr = omega_curr * np.pi / 180.0
+
+                if CLIP_THETA_OMEGA:
+                    omega_curr = np.clip(omega_curr, -ANGLE_VEL_MAX, ANGLE_VEL_MAX)
                 
                 self.omega_queues[uri].append(omega_curr)
                 omega = np.mean(np.stack(self.omega_queues[uri]), axis=0)
             
             else: 
                 raise NotImplementedError("Angular velocity calculation method not yet supported: {}".format(ANGULAR_VEL_CALC_METHOD))
+            
+            if CLIP_THETA_OMEGA:
+                euler_xyz[0:2] = np.clip(euler_xyz[0:2], -ANGLE_MAX, ANGLE_MAX)
+                omega = np.clip(omega, -ANGLE_VEL_MAX, ANGLE_VEL_MAX)
+                
+                # euler_xyz_remod = np.array([-euler_xyz[1], euler_xyz[0], euler_xyz[2]])
+                quat_mod_clipped = rowan.from_euler(-euler_xyz[1], euler_xyz[0], euler_xyz[2], "xyz")
+                quat = np.array([quat_mod_clipped[1], quat_mod_clipped[2], quat_mod_clipped[3], quat_mod_clipped[0]])
             
             # For the uri need the index of the crazyflie
             if uri not in self.uris:
