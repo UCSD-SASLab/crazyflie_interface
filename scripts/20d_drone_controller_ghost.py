@@ -36,28 +36,30 @@ else:
 np.set_printoptions(precision=2, suppress=True, floatmode='fixed')
 
 MODE = ["hover", "deepreach"][1]  # Default to deepreach mode
-GHOST_AGENT = ["pursuer", "evader", "both"][2]
+GHOST_AGENT = ["pursuer", "evader", "both"][0]
 GHOST_CONTROL_MODE = ["hover", "circle", "deepreach"][2]  # How to control the ghost agent (NOTE only when GHOST_AGENT is not "both")
-INIT_SETUP = 2
+INIT_SETUP = 1
 LOOKBACK_TIME = 1. # deepreach
+CONTROLLER_RATE = 50.
 
 TWOPLAYER_MODEL_NAME = "20d_MPC_halfellipse_omega2"
 
 TWOPLAYER_MODEL_FOLLOW_NAME = "20d_MPC_halfellipse_flipped_omega2"
 APPLY_FOLLOW_STRATEGY = True # Whether to apply the follow strategy for the pursuer
-FOLLOW_VALUE_THRESHOLD = 0.05 # If value fn > threshold, switch to follow strategy
+FOLLOW_VALUE_THRESHOLD = -0.1 # If value fn > threshold, switch to follow strategy
 
 USE_PURSUER_SAFETY_FILTER = True # Use add'l value fn to contain agents (MODE = "deepreach" only)
 USE_EVADER_SAFETY_FILTER = True
 SINGLEAGENT_MODEL_NAME = "Drone10D_2omega_box"
-ARENA_SAFETY_THRESHOLD = 0.05  # Threshold for applying safety control
+ARENA_SAFETY_THRESHOLD = 0.5  # Threshold for applying safety control
 
-LOAD_PRESOLVED_EVADER_TRAJ = True  # Whether to load a presolved trajectory for the evader agent
+LOAD_PRESOLVED_EVADER_TRAJ = False  # Whether to load a presolved trajectory for the evader agent
 PRESOLVED_EVADER_FILE = "EVADER_STATES_20drones_pursuerghost_ic2_20250903_205521.npz"  # File containing presolved evader trajectory
 
 class DeepReach20DControllerGhost(TemplateController):
     def __init__(self, node_name='deepreach_20d_controller_ghost'):
-        super().__init__(node_name, allow_undeclared_parameters=True, automatically_declare_parameters_from_overrides=True)
+        super().__init__(node_name, allow_undeclared_parameters=True, automatically_declare_parameters_from_overrides=True,
+                         controller_rate=CONTROLLER_RATE)
         self.ghost_state_pursuer = np.zeros(10)
         self.ghost_state_evader = np.zeros(10)
 
@@ -241,7 +243,7 @@ class DeepReach20DControllerGhost(TemplateController):
         # Initialize JSON logging
         self.log_data = []
         self.start_time = time.time()  # Track start time for relative timestamps
-        self.log_filename = f"/mounted_volume/drone_experiment_data/20drones_{GHOST_AGENT}ghost_ic{INIT_SETUP}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        self.log_filename = f"/mounted_volume/drone_experiment_data/20drones_{GHOST_AGENT}ghost_ic{INIT_SETUP}_{CONTROLLER_RATE}Hz_{ARENA_SAFETY_THRESHOLD}Vathsh_{FOLLOW_VALUE_THRESHOLD}Vfthsh_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         self.get_logger().info(f"JSON logging enabled. Log file: {self.log_filename}")
         
         # Track first occurrence of events
