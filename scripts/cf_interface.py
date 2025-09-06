@@ -95,6 +95,8 @@ class CfInterface(Node):
                     self.cmd_full_state_publishers[name] = self.create_publisher(
                         FullState, f"{name}/cmd_full_state", 1
                     )
+                self.FullStateMsg = FullState()
+                self.FullStateMsg.header.frame_id = '/world'
         else:
             raise NotImplementedError("Backend not yet supported")
         self.arm_service = self.create_client(Arm, 'all/arm')
@@ -300,7 +302,8 @@ class CfInterface(Node):
             return
         for i, name in enumerate(self.crazyflie_names):
             control = np.array(msg.data[16*i:16*(i+1)])
-            ctrl_msg = FullState()
+            ctrl_msg = self.FullStateMsg
+            ctrl_msg.header.stamp = self.get_clock().now().to_msg()
             ctrl_msg.pose.position.x = float(control[0])
             ctrl_msg.pose.position.y = float(control[1])
             ctrl_msg.pose.position.z = float(min(max(control[2], 0.2), 2.2))  # To be changed if desired
