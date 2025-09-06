@@ -97,6 +97,7 @@ class LQRController(TemplateController):
                 near_hover_state = np.concatenate([state[0:6], np.array([yaw])])
                 u[i] = self.u_hover + self.gain_matrix @ (near_hover_state - np.concatenate((self.goal_position[i], np.zeros(4))))
                 u[i, :2] = np.clip(u[i, :2], -0.2, 0.2)
+                # u[i, 2] = np.clip(u[i, 2], -1.0, 1.0)  # USE WHEN URI=[6,7,9]  # TODO: ST
                 u[i, 3] = np.clip(u[i, 3], 4.0, 16.0) 
         elif MODE == "2off":
             state = states[0]  # robot0(1)
