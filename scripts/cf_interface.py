@@ -163,8 +163,8 @@ class CfInterface(Node):
                 req = NotifySetpointsStop.Request()
                 req.group_mask = 0 
                 req.remain_valid_millisecs = 10
-                
-                self.notify_setpointstop_services.call_async(req)
+                for name in self.crazyflie_names:
+                    self.notify_setpointstop_services[name].call_async(req)
                 # 3. Send land command (twice to ensure it is not missed)
                 req = Land.Request()
                 req.group_mask = 0
