@@ -36,7 +36,7 @@ else:
 np.set_printoptions(precision=2, suppress=True, floatmode='fixed')
 
 MODE = ["hover", "deepreach"][1]  # Default to deepreach mode
-GHOST_AGENT = ["pursuer", "evader", "both"][1]
+GHOST_AGENT = ["pursuer", "evader", "both", "none"][1]
 GHOST_CONTROL_MODE = ["hover", "circle", "deepreach"][2]  # How to control the ghost agent (NOTE only when GHOST_AGENT is not "both")
 INIT_SETUP = 2
 LOOKBACK_TIME = 1. # deepreach
@@ -130,7 +130,8 @@ class DeepReach20DControllerGhost(TemplateController):
         robots = self._ros_parameters.get('robots', {})
         self.get_logger().info(f"Robots: {robots}")
         self.nbr_flying_robots = len(robots)
-        self.nbr_robots = self.nbr_flying_robots + 1
+        if self.GHOST_AGENT != "none":
+            self.nbr_robots = self.nbr_flying_robots + 1
         self.get_logger().info(f"Number of robots (including ghost): {self.nbr_robots}")
 
         # Initialize state history for RK4 integration
@@ -448,7 +449,7 @@ class DeepReach20DControllerGhost(TemplateController):
             # Extract full state information from robot states
             # Initialize 20D state with zeros for angles and angular velocities
             drone_20d_state = np.zeros(20)
-            
+            yawrates = np.zeros_like(len(states))
             for i, robot_state in enumerate(states):
 
                 if GHOST_AGENT != "both":
@@ -466,9 +467,23 @@ class DeepReach20DControllerGhost(TemplateController):
                     # The euler angles here are follow compared to the drone convention
                     roll = -euler_angles[0]   # θ_y  (post sign change: +roll = positive y acceleration)
                     pitch = euler_angles[1]  # θ_x  (without sign change: +pitch = positive x acceleration)
-                    yaw = euler_angles[2]    # θ_z
-                
-                if GHOST_AGENT == "pursuer":  # Live Drone 1 (evader)
+                    yaw = euler_angles[2]  # θ_z
+
+                if GHOST_AGENT == "none":
+                    start_iter = i * 10
+                    drone_20d_state[start_iter + 0] = pos[0]  # x1
+                    drone_20d_state[start_iter + 1] = vel[0]  # v1_x
+                    drone_20d_state[start_iter + 2] = pitch  # θ1_x (pitch angle)
+                    drone_20d_state[start_iter + 3] = omega[0]  # w1_x
+                    drone_20d_state[start_iter + 4] = pos[1]  # y1
+                    drone_20d_state[start_iter + 5] = vel[1]  # v1_y
+                    drone_20d_state[start_iter + 6] = roll  # θ1_y (roll angle)
+                    drone_20d_state[start_iter + 7] = omega[1]  # w1_y
+                    drone_20d_state[start_iter + 8] = pos[2]  # z1
+                    drone_20d_state[start_iter + 9] = vel[2]  # v1_z
+                    yawrates[i] = 2.0 * yaw
+
+                elif GHOST_AGENT == "pursuer":  # Live Drone 1 (evader)
                     # [x1, v1_x, θ1_x, ω1_x, y1, v1_y, θ1_y, ω1_y, z1, v1_z]
                     drone_20d_state[0] = pos[0]   # x1
                     drone_20d_state[1] = vel[0]   # v1_x
@@ -483,6 +498,7 @@ class DeepReach20DControllerGhost(TemplateController):
 
                     # Create a simple ghost state for the pursuer
                     drone_20d_state[10:20] = self.ghost_state_pursuer
+                    yawrates[0] = 2.0 * yaw
 
                 elif GHOST_AGENT == "evader":  # Live Drone 2 (pursuer)
                     # [x2, v2_x, θ2_x, ω2_x, y2, v2_y, θ2_y, ω2_y, z2, v2_z]
@@ -499,6 +515,7 @@ class DeepReach20DControllerGhost(TemplateController):
 
                     # Create a simple ghost state for the evader
                     drone_20d_state[0:10] = self.ghost_state_evader
+                    yawrates[0] = 2.0 * yaw
 
                 elif GHOST_AGENT == "both":
                     drone_20d_state[0:10] = self.ghost_state_evader
@@ -539,8 +556,18 @@ class DeepReach20DControllerGhost(TemplateController):
             # Apply control limits for safety     # T2_z
             # FIXME: Add in that we want to control yaw again
             ## Convert DeepReach controls to Crazyflie format: [roll, pitch, yaw_rate, thrust]
+            if GHOST_AGENT == "none":
+                u[0, 0] = evader_control[1]  # roll  # drone convention (+roll = + y acceleration)
+                u[0, 1] = -evader_control[0]  # pitch # SIGN CHANGE for drone convention (+pitch = - x acceleration)
+                u[0, 2] = 0.0  # yaw_rate
+                u[0, 3] = evader_control[2]  # thrust
 
-            if GHOST_AGENT == "pursuer":
+                u[1, 0] = pursuer_control[1]  # roll  # drone convention (+roll = + y acceleration)
+                u[1, 1] = -pursuer_control[0]  # pitch # SIGN CHANGE for drone convention (+pitch = - x acceleration)
+                u[1, 2] = 0.0  # yaw_rate
+                u[1, 3] = pursuer_control[2]  # thrust
+
+            elif GHOST_AGENT == "pursuer":
                 # Evader (drone 0) : DeepReach control
                 u[0, 0] = evader_control[1]  # roll  # drone convention (+roll = positive y acceleration)
                 u[0, 1] = -evader_control[0]  # pitch # SIGN CHANGE for drone convention (+pitch = negative x acceleration)
@@ -626,8 +653,7 @@ class DeepReach20DControllerGhost(TemplateController):
 
             if GHOST_AGENT != "both":
                 # We want to keep the yaw at 0, so yaw rate is an proporitional controller to keep yaw at 0
-                yawrate = 2.0 * yaw
-                u[:, 2] = yawrate
+                u[:, 2] = yawrates
 
             u[:, 3] = np.clip(u[:, 3], 4.0, 16.0)    # thrust limits
                 
@@ -690,6 +716,30 @@ class DeepReach20DControllerGhost(TemplateController):
 
             ## Convert to ctrl_msg format
             u = np.zeros((self.nbr_flying_robots, 16))
+
+            if GHOST_AGENT == "none":
+                u[0, 0] = self.evader_wp_state[0]  # x
+                u[0, 1] = self.evader_wp_state[4]  # y
+                u[0, 2] = self.evader_wp_state[8]  # z
+                u[0, 3] = self.evader_wp_state[1]  # vx
+                u[0, 4] = self.evader_wp_state[5]  # vy
+                u[0, 5] = self.evader_wp_state[9]  # vz
+                u[0, 6:10] = evader_quat
+                u[0, 10] = self.evader_wp_state[3]  # wx
+                u[0, 11] = self.evader_wp_state[7]  # wy
+                u[0, 12] = desired_yaw_dot  # wz
+
+                u[1, 0] = self.pursuer_wp_state[0]  # x
+                u[1, 1] = self.pursuer_wp_state[4]  # y
+                u[1, 2] = self.pursuer_wp_state[8]  # z
+                u[1, 3] = self.pursuer_wp_state[1]  # vx
+                u[1, 4] = self.pursuer_wp_state[5]  # vy
+                u[1, 5] = self.pursuer_wp_state[9]  # vz
+                u[1, 6:10] = pursuer_quat
+                u[1, 10] = self.pursuer_wp_state[3]  # wx
+                u[1, 11] = self.pursuer_wp_state[7]  # wy
+                u[1, 12] = desired_yaw_dot  # wz
+
             if GHOST_AGENT == "pursuer":
                 u[0, 0] = self.evader_wp_state[0] # x
                 u[0, 1] = self.evader_wp_state[4] # y
