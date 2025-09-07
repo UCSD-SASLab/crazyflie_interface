@@ -36,28 +36,43 @@ else:
 np.set_printoptions(precision=2, suppress=True, floatmode='fixed')
 
 MODE = ["hover", "deepreach"][1]  # Default to deepreach mode
-GHOST_AGENT = ["pursuer", "evader", "both"][0]
+GHOST_AGENT = ["pursuer", "evader", "both"][1]
 GHOST_CONTROL_MODE = ["hover", "circle", "deepreach"][2]  # How to control the ghost agent (NOTE only when GHOST_AGENT is not "both")
-INIT_SETUP = 1
+INIT_SETUP = 2
 LOOKBACK_TIME = 1. # deepreach
-CONTROLLER_RATE = 50.
+CONTROLLER_RATE = 30.   # NOTE: WILL TRIED 50, 30, 10 --> 30 maybe best?
+
+GHOST_PURSUER_SLOW_FACTOR = 0.5 # 0.5 # takes factor * step_size in integration 
+GHOST_EVADER_SLOW_FACTOR = 0.5 # 0.5 # takes factor * step_size in integration
 
 TWOPLAYER_MODEL_NAME = "20d_MPC_halfellipse_omega2"
 
 TWOPLAYER_MODEL_FOLLOW_NAME = "20d_MPC_halfellipse_flipped_omega2"
-APPLY_FOLLOW_STRATEGY = True # Whether to apply the follow strategy for the pursuer
-FOLLOW_VALUE_THRESHOLD = -0.1 # If value fn > threshold, switch to follow strategy
+USE_FOLLOW_FILTER = True # Whether to apply the follow strategy for the pursuer
+FOLLOW_VALUE_THRESHOLD = 0.1 # If value fn > threshold, switch to follow strategy
 
-USE_PURSUER_SAFETY_FILTER = True # Use add'l value fn to contain agents (MODE = "deepreach" only)
-USE_EVADER_SAFETY_FILTER = True
+USE_PURSUER_ARENA_FILTER = True # Use add'l value fn to contain agents (MODE = "deepreach" only)
+USE_EVADER_ARENA_FILTER = True
 SINGLEAGENT_MODEL_NAME = "Drone10D_2omega_box"
-ARENA_SAFETY_THRESHOLD = 0.5  # Threshold for applying safety control
+EVADER_ARENA_VALUE_THRESHOLD = 0.1
+PURSUER_ARENA_VALUE_THRESHOLD = 0.1 # If arena val fn < threshold, switch to stay-in-box strategy
+
+USE_SMOOTH_ARENA_FILTER = True
+BETA_SMOOTHING = 2.
 
 LOAD_PRESOLVED_EVADER_TRAJ = False  # Whether to load a presolved trajectory for the evader agent
 PRESOLVED_EVADER_FILE = "EVADER_STATES_20drones_pursuerghost_ic2_20250903_205521.npz"  # File containing presolved evader trajectory
 
+WAYPOINT_CONTROL = True # send iterative waypoints to follow rather than RPYT control
+WP_INTEGRATION_HZN = 0.1 # how far to integrate trajectory for next waypoint
+# WP_RATE_PER_CTRL = 5 # waypoint publications per control actions, hence true freq = CONTROLLER_RATE / WP_RATE_PER_CTRL  # Not used
+
 class DeepReach20DControllerGhost(TemplateController):
     def __init__(self, node_name='deepreach_20d_controller_ghost'):
+        self.circle_iteration = 0  # TEMP ST
+        if WAYPOINT_CONTROL:
+            self.control_publisher_topic = 'cf_interface/control_full_state'
+
         super().__init__(node_name, allow_undeclared_parameters=True, automatically_declare_parameters_from_overrides=True,
                          controller_rate=CONTROLLER_RATE)
         self.ghost_state_pursuer = np.zeros(10)
@@ -78,7 +93,9 @@ class DeepReach20DControllerGhost(TemplateController):
         ## 2 - OFFSET ##
         elif INIT_SETUP == 2:
             self.ghost_state_evader = np.array([-0.3, 0., 0., 0., 0.2, 0., 0., 0., 0.3, 0.])  # Initial EVADER ghost position 
-            self.ghost_state_pursuer = np.array([0.3, 0., 0., 0.,-0.2, 0., 0., 0., 0.7, 0.])  # Initial PURSUER ghost position
+            # self.ghost_state_pursuer = np.array([0.3, 0., 0., 0., -0.2, 0., 0., 0., 0.7, 0.])  # Initial PURSUER ghost position
+            # self.ghost_state_evader = np.array([0.3, 0., 0., 0., -0.2, 0., 0., 0., 1.0, 0.])  # Initial EVADER ghost position 
+            self.ghost_state_pursuer = np.array([-0.3, 0., 0., 0., 0.2, 0., 0., 0., 0.5, 0.])  # Initial PURSUER ghost position
 
         ## 3 - DIFF HEIGHTS ##
         elif INIT_SETUP == 3:
@@ -100,6 +117,11 @@ class DeepReach20DControllerGhost(TemplateController):
             self.ghost_state_evader = np.array([-3.8, 0., 0., 0., 1.8, 0., 0., 0., 0.7, 0.])  # Initial EVADER ghost position 
             self.ghost_state_pursuer = np.array([-3.6, 0., 0., 0., 1.6, 0., 0., 0., 0.3, 0.])  # Initial PURSUER ghost position
 
+        ## 7 - OPPOSITE ##
+        elif INIT_SETUP == 7:
+            self.ghost_state_evader = np.array([-1., 0., 0., 0., 1.8, 0., 0., 0., 0.7, 0.])  # Initial EVADER ghost position 
+            self.ghost_state_pursuer = np.array([1., 0., 0., 0., 0., 0., 0., 0., 0.3, 0.])  # Initial PURSUER ghost position
+
         else:
             raise ValueError("INIT_SETUP must be an integer between 1 and 6")
 
@@ -110,6 +132,11 @@ class DeepReach20DControllerGhost(TemplateController):
         self.nbr_flying_robots = len(robots)
         self.nbr_robots = self.nbr_flying_robots + 1
         self.get_logger().info(f"Number of robots (including ghost): {self.nbr_robots}")
+
+        # Initialize state history for RK4 integration
+        self.dt = 1.0/self.controller_rate # Control period (50Hz)
+
+        self.get_logger().info(f"Control period: {self.dt}")
 
         # Create marker publisher for ghost visualization
         self.marker_pub = self.create_publisher(Marker, 'ghost_evader_marker', 1)
@@ -151,6 +178,52 @@ class DeepReach20DControllerGhost(TemplateController):
             self.pursuer_marker.pose.position.z = float(self.ghost_state_pursuer[8].item())
             self.pursuer_marker.id = 1
             self.marker_pub.publish(self.pursuer_marker)
+
+        if WAYPOINT_CONTROL:
+            if MODE != "deepreach":
+                raise AssertionError("Need deepreach to integrate next waypoint .. unless you want to add the dynamics.")
+            # if float(WP_INTEGRATION_HZN // self.dt) != WP_INTEGRATION_HZN / self.dt:
+            #     self.get_logger().info(f"dt: {self.dt}, WP_INTEGRATION_HZN: {WP_INTEGRATION_HZN}")
+            #     raise AssertionError("Fix your waypoint integration horizon to be a multiple of self.dt (=1/freq)")
+
+            self.evader_wp_state = 1 * self.ghost_state_evader
+            self.pursuer_wp_state =  1 * self.ghost_state_pursuer
+
+            self.evader_wp_marker = Marker()
+            self.evader_wp_marker.ns = "evader_waypoint"
+            self.evader_wp_marker.header.frame_id = "world"
+            self.evader_wp_marker.type = Marker.SPHERE
+            self.evader_wp_marker.action = Marker.ADD
+            self.evader_wp_marker.scale.x = 0.1
+            self.evader_wp_marker.scale.y = 0.1
+            self.evader_wp_marker.scale.z = 0.1
+            self.evader_wp_marker.color.a = 0.4
+            self.evader_wp_marker.color.r = 0.0
+            self.evader_wp_marker.color.g = 1.0
+            self.evader_wp_marker.color.b = 1.0
+            self.evader_wp_marker.pose.position.x = float(self.evader_wp_state[0].item())
+            self.evader_wp_marker.pose.position.y = float(self.evader_wp_state[4].item())
+            self.evader_wp_marker.pose.position.z = float(self.evader_wp_state[8].item())
+            self.evader_wp_marker.id = 2
+            self.marker_pub.publish(self.evader_wp_marker)
+
+            self.pursuer_wp_marker = Marker()
+            self.pursuer_wp_marker.ns = "pursuer_waypoint"
+            self.pursuer_wp_marker.header.frame_id = "world"
+            self.pursuer_wp_marker.type = Marker.SPHERE
+            self.pursuer_wp_marker.action = Marker.ADD
+            self.pursuer_wp_marker.scale.x = 0.1
+            self.pursuer_wp_marker.scale.y = 0.1
+            self.pursuer_wp_marker.scale.z = 0.1
+            self.pursuer_wp_marker.color.a = 0.4
+            self.pursuer_wp_marker.color.r = 1.0
+            self.pursuer_wp_marker.color.g = 0.0
+            self.pursuer_wp_marker.color.b = 1.0
+            self.pursuer_wp_marker.pose.position.x = float(self.pursuer_wp_state[0].item())
+            self.pursuer_wp_marker.pose.position.y = float(self.pursuer_wp_state[4].item())
+            self.pursuer_wp_marker.pose.position.z = float(self.pursuer_wp_state[8].item())
+            self.pursuer_wp_marker.id = 3
+            self.marker_pub.publish(self.pursuer_wp_marker)
         
         twoplayer_model_path = f"deepreach/saved_models/Drones20D/{TWOPLAYER_MODEL_NAME}"
         with open(os.path.join(twoplayer_model_path, "orig_opt.pickle"), 'rb') as f:
@@ -173,7 +246,7 @@ class DeepReach20DControllerGhost(TemplateController):
             self.model.eval()
             self.get_logger().info("DeepReach 20D model loaded successfully, modelpath = " + twoplayer_model_path)
             
-            if APPLY_FOLLOW_STRATEGY:
+            if USE_FOLLOW_FILTER:
                 twoplayer_follow_model_path = f"deepreach/saved_models/Drones20D/{TWOPLAYER_MODEL_FOLLOW_NAME}"
                 with open(os.path.join(twoplayer_follow_model_path, "orig_opt.pickle"), 'rb') as f:
                     self.orig_opt_follow = pickle.load(f)
@@ -191,24 +264,24 @@ class DeepReach20DControllerGhost(TemplateController):
                 self.model_follow.eval()
                 self.get_logger().info("DeepReach 20D model follow loaded successfully, modelpath = " + twoplayer_follow_model_path)                
 
-            if USE_PURSUER_SAFETY_FILTER or USE_EVADER_SAFETY_FILTER:
+            if USE_PURSUER_ARENA_FILTER or USE_EVADER_ARENA_FILTER:
                 safety_model_path = os.path.join('deepreach/saved_models/Drone10D', SINGLEAGENT_MODEL_NAME)
                 self.get_logger().info("Loading arena containment model from " + safety_model_path)
                 with open(os.path.join(safety_model_path, "orig_opt.pickle"), 'rb') as f:
                     self.arena_orig_opt = pickle.load(f)
                 
                 dynamics_class = getattr(dynamics, self.arena_orig_opt.dynamics_class)
-                self.arena_dynamics = dynamics_class(**{argname: getattr(self.arena_orig_opt, argname)
+                self.dynamics_arena = dynamics_class(**{argname: getattr(self.arena_orig_opt, argname)
                               for argname in inspect.signature(dynamics_class).parameters.keys() if argname != 'self'})
                 
-                self.arena_model = SingleBVPNet(in_features=self.arena_dynamics.input_dim, out_features=1, type=self.arena_orig_opt.model, mode=self.arena_orig_opt.model_mode,
+                self.model_arena = SingleBVPNet(in_features=self.dynamics_arena.input_dim, out_features=1, type=self.arena_orig_opt.model, mode=self.arena_orig_opt.model_mode,
                                  final_layer_factor=1., hidden_features=self.arena_orig_opt.num_nl, num_hidden_layers=self.arena_orig_opt.num_hl,
-                                 periodic_transform_fn=self.arena_dynamics.periodic_transform_fn)
+                                 periodic_transform_fn=self.dynamics_arena.periodic_transform_fn)
 
                 checkpoint = torch.load(os.path.join(safety_model_path, "training/checkpoints/model_final.pth"), map_location=device, weights_only=True)
-                self.arena_model.load_state_dict(checkpoint["model"])
-                self.arena_model.to(device)
-                self.arena_model.eval()
+                self.model_arena.load_state_dict(checkpoint["model"])
+                self.model_arena.to(device)
+                self.model_arena.eval()
                 self.get_logger().info("Arena containment model loaded successfully, modelpath = " + safety_model_path)
             
         if LOAD_PRESOLVED_EVADER_TRAJ:
@@ -216,7 +289,7 @@ class DeepReach20DControllerGhost(TemplateController):
             self.presolved_evader_timestamps, self.presolved_evader_states = traj_data['timestamps'], traj_data['evader_full_states']
 
             # Convolve angles to smooth out noise
-            window_size = 30
+            window_size = 30 #assuming were using raw, unsmoothed data
             self.presolved_evader_states[:, 2] = np.convolve(self.presolved_evader_states[:, 2], np.ones(window_size)/window_size, mode='same') # pitch
             self.presolved_evader_states[:, 3] = np.convolve(self.presolved_evader_states[:, 3], np.ones(window_size)/window_size, mode='same') # omega_x
             self.presolved_evader_states[:, 6] = np.convolve(self.presolved_evader_states[:, 6], np.ones(window_size)/window_size, mode='same') # roll
@@ -234,16 +307,11 @@ class DeepReach20DControllerGhost(TemplateController):
         
         self.start_controller()
         self.iteration = 0
-        
-        # Initialize state history for RK4 integration
-        self.dt = 1.0/self.controller_rate # Control period (50Hz)
-
-        self.get_logger().info(f"Control period: {self.dt}")
 
         # Initialize JSON logging
         self.log_data = []
         self.start_time = time.time()  # Track start time for relative timestamps
-        self.log_filename = f"/mounted_volume/drone_experiment_data/20drones_{GHOST_AGENT}ghost_ic{INIT_SETUP}_{CONTROLLER_RATE}Hz_{ARENA_SAFETY_THRESHOLD}Vathsh_{FOLLOW_VALUE_THRESHOLD}Vfthsh_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        self.log_filename = f"/mounted_volume/drone_experiment_data/20drones_{GHOST_AGENT}ghost_ic{INIT_SETUP}_{CONTROLLER_RATE}Hz_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         self.get_logger().info(f"JSON logging enabled. Log file: {self.log_filename}")
         
         # Track first occurrence of events
@@ -267,6 +335,76 @@ class DeepReach20DControllerGhost(TemplateController):
                 else:
                     t = t.setdefault(part, {})
         return tree
+
+    def get_control_and_disturbance(self, state):
+        optimal_u, optimal_d, value, dv, ellx = self.infer_deepreach(state, LOOKBACK_TIME, self.model, self.dynamics)
+
+        ## FOLLOW FILTER ##
+
+        if USE_FOLLOW_FILTER and value.item() > FOLLOW_VALUE_THRESHOLD:
+            _, optimal_d_follow, _, _, _ = self.infer_deepreach(state, LOOKBACK_TIME, self.model_follow, self.dynamics_follow)
+
+            optimal_d = optimal_d_follow
+            # self.get_logger().info(f"Using follow pursuer strategy (value = {value.item()})")
+
+        ## ARENA FILTER ##
+
+        if USE_EVADER_ARENA_FILTER:
+            arena_u_evader, _, value_arena_evader, _, box_ellx_evader = self.infer_deepreach(state[0:10], LOOKBACK_TIME, self.model_arena, self.dynamics_arena, state_is_tensor=False)
+            
+            if USE_SMOOTH_ARENA_FILTER:
+                with torch.no_grad():
+                    value_pos = torch.clamp(value_arena_evader, min=0.0)
+                    lambda_factor = 1 - torch.exp(-BETA_SMOOTHING * value_pos)
+                    optimal_u = (lambda_factor * optimal_u + (1 - lambda_factor) * arena_u_evader)
+            else:
+                if value_arena_evader.item() < EVADER_ARENA_VALUE_THRESHOLD or box_ellx_evader.item() < 0.0:
+                    optimal_u = arena_u_evader
+                    # self.get_logger().info(f"Using arena safety filter for evader (value_arena_evader = {value_arena_evader.item()})")
+
+        if USE_PURSUER_ARENA_FILTER:
+            arena_u_pursuer, _, value_arena_pursuer, _, box_ellx_pursuer = self.infer_deepreach(state[10:20], LOOKBACK_TIME, self.model_arena, self.dynamics_arena, state_is_tensor=False)
+            
+            if USE_SMOOTH_ARENA_FILTER:
+                with torch.no_grad():
+                    value_pos = torch.clamp(value_arena_pursuer, min=0.0)
+                    lambda_factor = 1 - torch.exp(-BETA_SMOOTHING * value_pos)
+                    optimal_d = lambda_factor * optimal_d + (1 - lambda_factor) * arena_u_pursuer
+            else:
+                if value_arena_pursuer.item() < PURSUER_ARENA_VALUE_THRESHOLD or box_ellx_pursuer.item() < 0.0:
+                    optimal_d = arena_u_pursuer  
+
+        values = {"game": value, "arena_pursuer": value_arena_pursuer, "arena_evader": value_arena_evader}
+        
+        return optimal_u, optimal_d, values, ellx
+
+    def infer_deepreach(self, state, eval_time, model, dynamics, state_is_tensor=True):
+
+        time_tensor = torch.tensor([eval_time], dtype=torch.float32, device=device)
+        state_tensor = torch.tensor(state, dtype=torch.float32, device=device) if not state_is_tensor else state
+        deepreach_input = torch.cat([time_tensor, state_tensor]).unsqueeze(0)
+
+        model_results = model(
+            {"coords": dynamics.coord_to_input(deepreach_input)}
+        ) 
+        model_out = model_results["model_out"]
+        model_in = model_results["model_in"]
+
+        if model_out.dim() == 1:
+            model_out = model_out.unsqueeze(0)
+        
+        dv = dynamics.io_to_dv(
+            model_in, model_out.squeeze(dim=-1)
+        ).detach()
+
+        value = dynamics.io_to_value(
+            model_in, model_out.squeeze(dim=-1)
+        )
+
+        boundary_value = dynamics.boundary_fn(state_tensor).detach()
+        u = dynamics.optimal_control(state_tensor, dv[..., 1:])
+        d = dynamics.optimal_disturbance(state_tensor, dv[..., 1:])
+        return u, d, value, dv, boundary_value
 
     def __call__(self, state):
         """
@@ -369,130 +507,13 @@ class DeepReach20DControllerGhost(TemplateController):
                 else:
                     raise ValueError(f"Unknown GHOST_AGENT: {GHOST_AGENT}")
             
-            # Convert to tensor for DeepReach
+            ## Make Deepreach Tensor and Infer
+
             drone_20d_state_tensor = torch.tensor(drone_20d_state, dtype=torch.float32, device=device)
-
-            # self.get_logger().info(f"Evader state: {drone_20d_state[0:10]}")
-            # self.get_logger().info(f"Pursuer state: {drone_20d_state[10:20]}")
-            
-            # Add time dimension for DeepReach input: [time, state]
-            time_tensor = torch.tensor([LOOKBACK_TIME], dtype=torch.float32, device=device)
-            deepreach_input = torch.cat([time_tensor, drone_20d_state_tensor]).unsqueeze(0)  # [1, 21]
-            
-            traj_policy_results = self.model(
-                {"coords": self.dynamics.coord_to_input(deepreach_input)}
-            )
-            
-            model_out = traj_policy_results["model_out"]
-            model_in = traj_policy_results["model_in"]
-            
-            # Ensure proper shape for dynamics calculations
-            if model_out.dim() == 1:
-                model_out = model_out.unsqueeze(0)
-            
-            dv = self.dynamics.io_to_dv(
-                model_in,
-                model_out.squeeze(dim=-1),
-            ).detach()
-
-            value = self.dynamics.io_to_value(
-                model_in,
-                model_out.squeeze(dim=-1),
-            ).detach()
-
-            ellx = self.dynamics.boundary_fn(drone_20d_state_tensor).detach()
-            
-            # Use gradient to compute optimal control and disturbance
-            optimal_u = self.dynamics.optimal_control(drone_20d_state_tensor, dv[..., 1:])
-            optimal_d = self.dynamics.optimal_disturbance(drone_20d_state_tensor, dv[..., 1:])
-            
-            # Debug gradients for thrust control
-            dVdv1_z = dv[..., 1:][0, 9].item()  # gradient w.r.t. v1_z
-            dVdv2_z = dv[..., 1:][0, 19].item()  # gradient w.r.t. v2_z
-            #self.get_logger().info(f"Gradients - dVdv1_z: {dVdv1_z:.4f}, dVdv2_z: {dVdv2_z:.4f}")
-
-            if APPLY_FOLLOW_STRATEGY and value.item() > FOLLOW_VALUE_THRESHOLD:
-                # Compute gradients for follow model
-                traj_policy_results_follow = self.model_follow(
-                    {"coords": self.dynamics_follow.coord_to_input(deepreach_input)}
-                )
-                model_out_follow = traj_policy_results_follow["model_out"]
-                model_in_follow = traj_policy_results_follow["model_in"]
-                if model_out_follow.dim() == 1:
-                    model_out_follow = model_out_follow.unsqueeze(0)
-                
-                dv_follow = self.dynamics_follow.io_to_dv(
-                    model_in_follow,
-                    model_out_follow.squeeze(dim=-1),
-                ).detach()
-
-                optimal_d_follow = self.dynamics_follow.optimal_disturbance(drone_20d_state_tensor, dv_follow[..., 1:])
-
-                optimal_d = optimal_d_follow  # Switch to follow disturbance
-                self.get_logger().info(f"Using follow pursuer strategy (value = {value.item()})")
-
-            ## ARENA CONTAINMENT ##
-
-            if USE_EVADER_SAFETY_FILTER:
-                time_tensor = torch.tensor([LOOKBACK_TIME], dtype=torch.float32, device=device)
-                evader_10d_state_tensor = torch.tensor(drone_20d_state[0:10], dtype=torch.float32, device=device)
-                deepreach_arena_evader_input = torch.cat([time_tensor, evader_10d_state_tensor]).unsqueeze(0)  # [1, 11]
-                arena_evader_results = self.arena_model(
-                    {"coords": self.arena_dynamics.coord_to_input(deepreach_arena_evader_input)}
-                )                
-                arena_evader_model_out = arena_evader_results["model_out"]
-                arena_evader_model_in = arena_evader_results["model_in"]      
-                # Ensure proper shape for dynamics calculations
-                if arena_evader_model_out.dim() == 1:
-                    arena_evader_model_out = arena_evader_model_out.unsqueeze(0)
-
-                dv_arena_evader = self.arena_dynamics.io_to_dv(
-                    arena_evader_model_in,
-                    arena_evader_model_out.squeeze(dim=-1),
-                ).detach()
-                value_arena_evader = self.arena_dynamics.io_to_value(
-                    arena_evader_model_in,
-                    arena_evader_model_out.squeeze(dim=-1),
-                ).detach()
-          
-                box_ellx_evader = self.arena_dynamics.boundary_fn(evader_10d_state_tensor).detach()
-                # Use gradient to compute optimal control and disturbance
-                safe_u_evader = self.arena_dynamics.optimal_control(evader_10d_state_tensor, dv_arena_evader[..., 1:])
-                # Apply safety control if near or outside boundary
-                if value_arena_evader.item() < ARENA_SAFETY_THRESHOLD or box_ellx_evader.item() < 0.0:
-                    # self.get_logger().info(f"Evader near/outside arena boundary (value_arena = {value_arena_evader.item()}), applying containment policy")
-                    optimal_u = safe_u_evader
-            
-            if USE_PURSUER_SAFETY_FILTER:
-                time_tensor = torch.tensor([LOOKBACK_TIME], dtype=torch.float32, device=device)
-                pursuer_10d_state_tensor = torch.tensor(drone_20d_state[10:20], dtype=torch.float32, device=device)
-                deepreach_arena_pursuer_input = torch.cat([time_tensor, pursuer_10d_state_tensor]).unsqueeze(0)  # [1, 11]
-                arena_pursuer_results = self.arena_model(
-                    {"coords": self.arena_dynamics.coord_to_input(deepreach_arena_pursuer_input)}
-                )            
-                arena_pursuer_model_out = arena_pursuer_results["model_out"]
-                arena_pursuer_model_in = arena_pursuer_results["model_in"]
-                # Ensure proper shape for dynamics calculations
-                if arena_pursuer_model_out.dim() == 1:
-                    arena_pursuer_model_out = arena_pursuer_model_out.unsqueeze(0)
-                
-                dv_arena_pursuer = self.arena_dynamics.io_to_dv(
-                    arena_pursuer_model_in,
-                    arena_pursuer_model_out.squeeze(dim=-1),
-                ).detach()
-                value_arena_pursuer = self.arena_dynamics.io_to_value(
-                    arena_pursuer_model_in,
-                    arena_pursuer_model_out.squeeze(dim=-1),
-                ).detach()
-
-                box_ellx_pursuer = self.arena_dynamics.boundary_fn(pursuer_10d_state_tensor).detach()
-                safe_u_pursuer = self.arena_dynamics.optimal_control(pursuer_10d_state_tensor, dv_arena_pursuer[..., 1:])
-                
-                if value_arena_pursuer.item() < ARENA_SAFETY_THRESHOLD or box_ellx_pursuer.item() < 0.0:
-                    # self.get_logger().info(f"Pursuer near/outside arena boundary (value_arena = {value_arena_pursuer.item()}), applying containment policy")
-                    optimal_d = safe_u_pursuer
-
-            ## CONVERT DR CONTROLS ##
+            optimal_u, optimal_d, values, ellx = self.get_control_and_disturbance(drone_20d_state_tensor)
+            value = values["game"]
+            value_arena_pursuer = values["arena_pursuer"]
+            value_arena_evader = values["arena_evader"]
 
             # Extract control inputs from DeepReach
             # Control: [S1_x, S1_y, T1_z] (evader)
@@ -536,7 +557,7 @@ class DeepReach20DControllerGhost(TemplateController):
                     # Imagine what the next 20d state would be by integrating deepreach forward
                     f = self.dynamics.dsdt(drone_20d_state_tensor, optimal_u, optimal_d)
                     if self.in_flight:
-                        next_state = drone_20d_state_tensor + self.dt * f.squeeze(0)
+                        next_state = drone_20d_state_tensor + GHOST_PURSUER_SLOW_FACTOR * self.dt * f.squeeze(0)
                         self.ghost_state_pursuer = next_state[10:20].cpu().numpy()  # Update ghost state to next pursuer state
                 else:
                     raise ValueError(f"Unknown GHOST_CONTROL_MODE: {GHOST_CONTROL_MODE}")
@@ -562,7 +583,7 @@ class DeepReach20DControllerGhost(TemplateController):
                     # Imagine what the next 20d state would be by integrating deepreach forward
                     f = self.dynamics.dsdt(drone_20d_state_tensor, optimal_u, optimal_d)
                     if self.in_flight:
-                        next_state = drone_20d_state_tensor + self.dt * f.squeeze(0)
+                        next_state = drone_20d_state_tensor + GHOST_EVADER_SLOW_FACTOR * self.dt * f.squeeze(0)
                         self.ghost_state_evader = next_state[0:10].cpu().numpy()  # Compute next evader state
                 else:
                     raise ValueError(f"Unknown GHOST_CONTROL_MODE: {GHOST_CONTROL_MODE}")
@@ -612,10 +633,96 @@ class DeepReach20DControllerGhost(TemplateController):
                 
         else:
             raise NotImplementedError(f"Mode {MODE} not implemented")
+
+        ## WAYPOINT SOLVING AND PLANNING ##
+                
+        if WAYPOINT_CONTROL:
+            xi, ui, di =  drone_20d_state_tensor, optimal_u, optimal_d
             
-        self.iteration += 1
-        
-        # Log the actual positions of the robots
+            ## Integrate from current state ##
+            if self.in_flight: 
+
+                f = self.dynamics.dsdt(xi, ui, di)
+                xi = xi + self.dt * f.squeeze(0) ## FIXME FE -> RK4
+                for i in range(int(WP_INTEGRATION_HZN / self.dt) - 1):
+
+                    ui, di, _, _ = self.get_control_and_disturbance(xi)
+                    f = self.dynamics.dsdt(xi, ui, di)
+                    xi = xi + self.dt * f.squeeze(0) ## FIXME FE -> RK4
+
+            # [x1, v1_x, θ1_x, ω1_x, y1, v1_y, θ1_y, ω1_y, z1, v1_z]
+            # TEST CIRCLE WAYPOINTS
+            self.evader_wp_state = np.array([2. * np.cos(0.05 * self.iteration), 1. * np.cos(0.05 * self.iteration), 0., 0., 2. * np.sin(0.05 * self.iteration), -1. * np.sin(0.05 * self.iteration), 0., 0., 1., 0.])
+            # self.evader_wp_state = np.array([0., 0., 0., 0., 0., 0., 0., 0., 0.5, 0.])
+            # self.pursuer_wp_state = np.array([0., 0., 0., 0., 0., 0., 0., 0., 0.5, 0.])
+            # if self.in_flight:  # Figure 8 implementation
+            #     self.circle_iteration += 1
+            #     self.evader_wp_state[0] = 2. * np.sin(0.03 * self.circle_iteration)
+            #     self.evader_wp_state[4] = 2. * np.sin(2 * 0.03 * self.circle_iteration)
+            self.evader_wp_state = xi[0:10].cpu().numpy()  # Compute next evader state  # TEMP COMMENTED OUT ST
+            self.pursuer_wp_state = xi[10:20].cpu().numpy()  # Compute next pursuer state  # TEMP COMMENTED OUT ST
+
+            # FIX ANGLES FOR NOW
+            # self.evader_wp_state[2] = 0.
+            # self.evader_wp_state[3] = 0.
+            # self.evader_wp_state[6] = 0.
+            # self.evader_wp_state[7] = 0.
+
+            ## Update markers
+            self.evader_wp_marker.pose.position.x = float(self.evader_wp_state[0].item())
+            self.evader_wp_marker.pose.position.y = float(self.evader_wp_state[4].item())
+            self.evader_wp_marker.pose.position.z = float(self.evader_wp_state[8].item())
+            self.marker_pub.publish(self.evader_wp_marker)
+            self.pursuer_wp_marker.pose.position.x = float(self.pursuer_wp_state[0].item())
+            self.pursuer_wp_marker.pose.position.y = float(self.pursuer_wp_state[4].item())
+            self.pursuer_wp_marker.pose.position.z = float(self.pursuer_wp_state[8].item())
+            self.marker_pub.publish(self.pursuer_wp_marker)
+
+            ## Convert to 
+            desired_yaw, desired_yaw_dot = 0., 0.
+            evader_quat = rowan.from_euler(-self.evader_wp_state[6], self.evader_wp_state[2], desired_yaw, "xyz") # TODO does this end in w?
+            pursuer_quat = rowan.from_euler(-self.pursuer_wp_state[6], self.pursuer_wp_state[2], desired_yaw, "xyz") # TODO does this end in w?
+            
+            # self.get_logger().info(f"Evader wp state: {self.evader_wp_state}")
+            # self.get_logger().info(f"evader quat: {evader_quat}, norm={np.linalg.norm(evader_quat)}")
+            # if np.linalg.norm(evader_quat) != 1.:
+            #     raise AssertionError(f"Sending Bad quaternion: quat={evader_quat}, norm={np.linalg.norm(evader_quat)}")
+
+            ## Convert to ctrl_msg format
+            u = np.zeros((self.nbr_flying_robots, 16))
+            if GHOST_AGENT == "pursuer":
+                u[0, 0] = self.evader_wp_state[0] # x
+                u[0, 1] = self.evader_wp_state[4] # y
+                u[0, 2] = self.evader_wp_state[8] # z
+                u[0, 3] = self.evader_wp_state[1] # vx
+                u[0, 4] = self.evader_wp_state[5] # vy
+                u[0, 5] = self.evader_wp_state[9] # vz
+                u[0, 6:10] = evader_quat
+                u[0, 10] = self.evader_wp_state[3] # wx
+                u[0, 11] = self.evader_wp_state[7] # wy
+                u[0, 12] = desired_yaw_dot # wz
+
+            if GHOST_AGENT == "evader":
+                u[0, 0] = self.pursuer_wp_state[0] # x
+                u[0, 1] = self.pursuer_wp_state[4] # y
+                u[0, 2] = self.pursuer_wp_state[8] # z
+                u[0, 3] = self.pursuer_wp_state[1] # vx
+                u[0, 4] = self.pursuer_wp_state[5] # vy
+                u[0, 5] = self.pursuer_wp_state[9] # vz
+                u[0, 6:10] = pursuer_quat
+                u[0, 10] = self.pursuer_wp_state[3] # wx
+                u[0, 11] = self.pursuer_wp_state[7] # wy
+                u[0, 12] = desired_yaw_dot # wz
+            # [x1, v1_x, θ1_x, ω1_x, y1, v1_y, θ1_y, ω1_y, z1, v1_z]
+
+            # TODO: could try estiamting accel u[..., 13:16] from integration finite-diff for smoother flight
+
+        # self.get_logger().info(f"Control: {u}")
+        # self.get_logger().info(f"Position: {state[0:3]}")
+        # self.get_logger().info(f"Roll for DR: {roll:.2f}, Pitch for DR: {pitch:.2f}")
+
+        ## WRITE TO JSON ##
+
         # Extract actual positions and velocities from [x, y, z, vx, vy, vz] format
         if MODE == "deepreach":
             actual_pos1 = drone_20d_state[[0, 4, 8]]  # Current actual position [x, y, z]
@@ -630,19 +737,19 @@ class DeepReach20DControllerGhost(TemplateController):
             box_min = np.array([-4.5, -2.5, 0.0])  # min x, y, z
             box_max = np.array([ 4.5,  2.5, 2.5])  # max x, y, z
 
-            if(xydist < 0.25 and z_dist < 0.75):
+            if(xydist < 0.25 and z_dist < 0.75):  # FIXME: I don't think this actually tracks the collision anymore
                 # Track first collision warning time
                 if self.first_collision_warning_time is None:
                     self.first_collision_warning_time = time.time() - self.start_time
-                self.get_logger().info(f"Collision warning! Distance: {xydist:.2f} m in xy and {z_dist:.2f} m in z direction")
+                # self.get_logger().info(f"Collision warning! Distance: {xydist:.2f} m in xy and {z_dist:.2f} m in z direction")
 
             if np.any(actual_pos1 < box_min) or np.any(actual_pos1 > box_max):
                 # Track first out of bounds time
                 if self.first_out_of_bounds_time is None:
                     self.first_out_of_bounds_time = time.time() - self.start_time
-                self.get_logger().warn(
-                    f"Evader OUT OF BOUNDS: position {actual_pos1}"
-                )
+                # self.get_logger().warn(
+                #     f"Evader OUT OF BOUNDS: position {actual_pos1}"
+                # )
 
             if self.iteration % 5 == 0:  # Log every 50 iterations (about once per second)
                 pass
@@ -662,17 +769,23 @@ class DeepReach20DControllerGhost(TemplateController):
                     "actual_position": actual_pos1.tolist(),
                     "actual_velocity": actual_vel1.tolist(),
                     "control": evader_control.tolist() if MODE == "deepreach" else None,
-                    "full_state": drone_20d_state[0:10].tolist()
+                    "full_state": drone_20d_state[0:10].tolist(),
+                    "waypoint": self.evader_wp_state.tolist() if WAYPOINT_CONTROL else None
                 },
                 "pursuer": {
                     "actual_position": actual_pos2.tolist(),
                     "actual_velocity": actual_vel2.tolist(),
                     "control": pursuer_control.tolist() if MODE == "deepreach" else None,
-                    "full_state": drone_20d_state[10:20].tolist()
+                    "full_state": drone_20d_state[10:20].tolist(),
+                    "waypoint": self.pursuer_wp_state.tolist() if WAYPOINT_CONTROL else None
                 },
                 "distances": {
                     "xy_distance": float(xydist),
-                    "z_distance": float(z_dist)
+                    "z_distance": float(z_dist),
+                    "l_x": ellx.item(),
+                    "V_PE": value.item(),
+                    "V_A_pursuer": value_arena_pursuer.item() if USE_PURSUER_ARENA_FILTER else None,
+                    "V_A_evader": value_arena_evader.item() if USE_EVADER_ARENA_FILTER else None,
                 },
                 "events": {
                     "first_collision_warning_time": self.first_collision_warning_time,
@@ -681,10 +794,8 @@ class DeepReach20DControllerGhost(TemplateController):
             }
             self.log_data.append(log_entry)
 
-        # self.get_logger().info(f"Control: {u}")
-        # self.get_logger().info(f"Position: {state[0:3]}")
-        # self.get_logger().info(f"Roll for DR: {roll:.2f}, Pitch for DR: {pitch:.2f}")
-        return u.flatten()
+        self.iteration += 1
+        return u.flatten() # FIXME do we still want to flatten for WAYPOINT_CONTROL
 
     def save_log_file(self):
         """Save the logged data to a JSON file."""
@@ -695,8 +806,22 @@ class DeepReach20DControllerGhost(TemplateController):
                         "metadata": {
                             "timestamp": datetime.now().isoformat(),
                             "total_iterations": len(self.log_data),
+
+                            "controller_rate": CONTROLLER_RATE,
                             "mode": MODE,
-                            "model_path": TWOPLAYER_MODEL_NAME
+                            "ghost_agent": GHOST_AGENT,
+                            "model_path": TWOPLAYER_MODEL_NAME,
+                            
+                            "use_pursuer_arena_filter": USE_PURSUER_ARENA_FILTER,
+                            "use_evader_arena_filter": USE_EVADER_ARENA_FILTER,
+                            "evader_arena_value_threshold": EVADER_ARENA_VALUE_THRESHOLD,
+                            "pursuer_arena_value_threshold": PURSUER_ARENA_VALUE_THRESHOLD,
+
+                            "use_follow_filter": USE_FOLLOW_FILTER,
+                            "follow_value_threshold": FOLLOW_VALUE_THRESHOLD,
+
+                            "waypoint_control": WAYPOINT_CONTROL,
+                            "wp_integration_hzn": WP_INTEGRATION_HZN,
                         },
                         "data": self.log_data
                     }, f, indent=2)
