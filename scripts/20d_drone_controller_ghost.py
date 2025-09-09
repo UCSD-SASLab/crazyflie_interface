@@ -42,8 +42,7 @@ INIT_SETUP = 2
 LOOKBACK_TIME = 1. # deepreach
 CONTROLLER_RATE = 30.   # NOTE: WILL TRIED 50, 30, 10 --> 30 maybe best?
 
-GHOST_AGENT = ["pursuer", "evader", "both"][2]
-GHOST_PURSUER_SLOW_FACTOR = 0.5 # 0.5 # takes factor * step_size in integration 
+GHOST_AGENT = ["pursuer", "evader", "both", "none"][0]
 GHOST_EVADER_SLOW_FACTOR = 0.5 # 0.5 # takes factor * step_size in integration
 GHOST_PURSUER_SIMPLE = False
 GHOST_EVADER_SIMPLE = True
@@ -54,7 +53,7 @@ SIMPLE_HEIGHT = 1.
 TWOPLAYER_MODEL_NAME = "20d_MPC_halfellipse_omega2"
 
 TWOPLAYER_MODEL_FOLLOW_NAME = "20d_MPC_halfellipse_flipped_omega2"
-USE_FOLLOW_FILTER = True # Whether to apply the follow strategy for the pursuer
+USE_FOLLOW_FILTER = False # Whether to apply the follow strategy for the pursuer
 FOLLOW_VALUE_THRESHOLD = 0.1 # If value fn > threshold, switch to follow strategy
 
 USE_PURSUER_ARENA_FILTER = True # Use add'l value fn to contain agents (MODE = "deepreach" only)
@@ -136,7 +135,9 @@ class DeepReach20DControllerGhost(TemplateController):
         robots = self._ros_parameters.get('robots', {})
         self.get_logger().info(f"Robots: {robots}")
         self.nbr_flying_robots = len(robots)
-        if self.GHOST_AGENT != "none":
+        if GHOST_AGENT == "none":
+            self.nbr_robots = self.nbr_flying_robots
+        else:
             self.nbr_robots = self.nbr_flying_robots + 1
         self.get_logger().info(f"Number of robots (including ghost): {self.nbr_robots}")
 
@@ -455,7 +456,7 @@ class DeepReach20DControllerGhost(TemplateController):
             # Extract full state information from robot states
             # Initialize 20D state with zeros for angles and angular velocities
             drone_20d_state = np.zeros(20)
-            yawrates = np.zeros_like(len(states))
+            yawrates = np.zeros(len(states))
             for i, robot_state in enumerate(states):
 
                 if GHOST_AGENT != "both":
@@ -504,18 +505,7 @@ class DeepReach20DControllerGhost(TemplateController):
 
                     # Create a simple ghost state for the pursuer
                     drone_20d_state[10:20] = self.ghost_state_pursuer
-                    yawrates[0] = 2.0 * yaw
-
-                    if GHOST_PURSUER_SIMPLE:
-                        # CIRCLE
-                        drone_20d_state[10:20] = np.array([SIMPLE_RADIUS * np.cos(SIMPLE_FREQ * self.iteration), # x
-                                                          SIMPLE_RADIUS * SIMPLE_FREQ * CONTROLLER_RATE * np.cos(SIMPLE_FREQ * self.iteration), # vx
-                                                          0., 0., 
-                                                          SIMPLE_RADIUS * np.sin(SIMPLE_FREQ * self.iteration), # y 
-                                                          -SIMPLE_RADIUS * SIMPLE_FREQ * CONTROLLER_RATE * np.sin(SIMPLE_FREQ * self.iteration), # vy
-                                                          0., 0., 
-                                                          SIMPLE_HEIGHT, #z
-                                                          0.])
+                    yawrates[0] = 2.0 * yaw #FIXME -> bugs
 
                     if GHOST_PURSUER_SIMPLE:
                         # CIRCLE
@@ -543,18 +533,7 @@ class DeepReach20DControllerGhost(TemplateController):
 
                     # Create a simple ghost state for the evader
                     drone_20d_state[0:10] = self.ghost_state_evader
-                    yawrates[0] = 2.0 * yaw
-
-                    if GHOST_EVADER_SIMPLE:
-                        # CIRCLE
-                        drone_20d_state[0:10] = np.array([SIMPLE_RADIUS * np.cos(SIMPLE_FREQ * self.iteration), # x
-                                                          SIMPLE_RADIUS * SIMPLE_FREQ * CONTROLLER_RATE * np.cos(SIMPLE_FREQ * self.iteration), # vx
-                                                          0., 0., 
-                                                          SIMPLE_RADIUS * np.sin(SIMPLE_FREQ * self.iteration), # y 
-                                                          -SIMPLE_RADIUS * SIMPLE_FREQ * CONTROLLER_RATE * np.sin(SIMPLE_FREQ * self.iteration), # vy
-                                                          0., 0., 
-                                                          SIMPLE_HEIGHT, #z
-                                                          0.])
+                    yawrates[0] = 2.0 * yaw #FIXME -> bugs
 
                     if GHOST_EVADER_SIMPLE:
                         # CIRCLE
