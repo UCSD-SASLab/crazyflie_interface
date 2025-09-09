@@ -41,6 +41,7 @@ class CfInterface(Node):
         # self.land_service.wait_for_service()
         self.get_logger().info(f"Created takeoff and land services for {self.crazyflie_names}")
         self.state = [None for _ in self.crazyflie_names]
+
         self.time_init = None
         self.get_logger().info(f"URIs: {self.uris}")
         # self.uris = [4]
@@ -149,7 +150,7 @@ class CfInterface(Node):
             else:
                 req = Takeoff.Request()
                 req.group_mask = 0  # all crazyflies
-                req.height = 0.5
+                req.height = 1.0
                 req.duration = rclpy.duration.Duration(seconds=2.0).to_msg()
                 self.takeoff_service.call_async(req)
                 self.takeoff_timer = self.create_timer(5.0, self.toggle_post_takeoff)
@@ -272,7 +273,7 @@ class CfInterface(Node):
                 return
             # Find index of uri in self.uris
             index = self.uris.index(uri)
-            self.get_logger().info(f"{omega}", throttle_duration_sec=0.2)
+            # self.get_logger().info(f"{omega}", throttle_duration_sec=0.2)
             self.state[index] = np.concatenate((pos, vel, quat, omega))
             self.timestamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
             
@@ -302,24 +303,37 @@ class CfInterface(Node):
             return
         for i, name in enumerate(self.crazyflie_names):
             control = np.array(msg.data[16*i:16*(i+1)])
+            # self.get_logger().info(f"CONTROL IN cf_interface: {control}")
             ctrl_msg = self.FullStateMsg
             ctrl_msg.header.stamp = self.get_clock().now().to_msg()
             ctrl_msg.pose.position.x = float(control[0])
             ctrl_msg.pose.position.y = float(control[1])
             ctrl_msg.pose.position.z = float(min(max(control[2], 0.2), 2.2))  # To be changed if desired
-            ctrl_msg.pose.orientation.x = float(control[6])
-            ctrl_msg.pose.orientation.y = float(control[7])
-            ctrl_msg.pose.orientation.z = float(control[8])
-            ctrl_msg.pose.orientation.w = float(control[9])
             ctrl_msg.twist.linear.x = float(control[3])
             ctrl_msg.twist.linear.y = float(control[4])
             ctrl_msg.twist.linear.z = float(control[5])
+            # ctrl_msg.twist.linear.x = 0.0
+            # ctrl_msg.twist.linear.y = 0.0
+            # ctrl_msg.twist.linear.z = 0.0
+            # ctrl_msg.pose.orientation.w = float(control[6])
+            # ctrl_msg.pose.orientation.x = float(control[7])
+            # ctrl_msg.pose.orientation.y = float(control[8])
+            # ctrl_msg.pose.orientation.z = float(control[9])
+            ctrl_msg.pose.orientation.x = 0.
+            ctrl_msg.pose.orientation.y = 0.
+            ctrl_msg.pose.orientation.z = 0.
+            ctrl_msg.pose.orientation.w = 1.
             ctrl_msg.twist.angular.x = float(control[10])
             ctrl_msg.twist.angular.y = float(control[11])
             ctrl_msg.twist.angular.z = float(control[12])
+            # ctrl_msg.twist.angular.x = 0.
+            # ctrl_msg.twist.angular.y = 0.
+            # ctrl_msg.twist.angular.z = 0.
             ctrl_msg.acc.x = float(control[13])
             ctrl_msg.acc.y = float(control[14])
             ctrl_msg.acc.z = float(control[15])
+
+            # self.get_logger().info(f"IN CF_INTERFACE: (x,y,z)={(float(control[0]), float(control[1]), float(min(max(control[2], 0.2), 2.2)))}")
 
             self.cmd_full_state_publishers[name].publish(ctrl_msg)
             # cmd_full_state: pose (3d position + quaternion orientation), velocity (3d linear + 3d angular), acceleration (3d linear)
