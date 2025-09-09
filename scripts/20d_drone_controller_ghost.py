@@ -21,6 +21,7 @@ from deepreach.dynamics.dynamics import DronePursuitEvasion20D
 from deepreach.dynamics import dynamics
 from visualization_msgs.msg import Marker
 from geometry_msgs.msg import Point
+from collections import deque
 
 # Set device for PyTorch
 if torch.backends.mps.is_available():
@@ -40,6 +41,7 @@ GHOST_CONTROL_MODE = ["hover", "circle", "deepreach"][2]  # How to control the g
 INIT_SETUP = 2
 LOOKBACK_TIME = 1. # deepreach
 CONTROLLER_RATE = 50.   # NOTE: WILL TRIED 50, 30, 10 --> 30 maybe best?
+CALIBRATE_FIRST = True
 
 GHOST_AGENT = ["pursuer", "evader", "both", "none"][0]
 CLAMP_RPYT_CONTROLS = True
@@ -332,9 +334,38 @@ class DeepReach20DControllerGhost(TemplateController):
         # Track first occurrence of events
         self.first_collision_warning_time = None
         self.first_out_of_bounds_time = None
+
+        # For calibration
+        self.state_pos_buffer = deque([], int(0.2 * 50.))
+        self.calibration_counter = 0
+        gain_matrix = np.zeros((4, 7))
+        gain_matrix[0, 1] = -0.2  # y -> roll
+        gain_matrix[0, 4] = -0.2  # v_y -> roll
+        gain_matrix[1, 0] = 0.2  # x -> pitch
+        gain_matrix[1, 3] = 0.2  # v_x -> pitch
+        gain_matrix[2, 6] = 2.0  # yaw -> yaw_dot
+        gain_matrix[3, 2] = -10.0  # z -> thrust
+        gain_matrix[3, 5] = -10.0  # v_z -> thrust
+        self.gain_matrix = gain_matrix
+        self.u_hover = np.array([0.0, 0.0, 0.0, 10.5]) 
+        if GHOST_AGENT  == "evader":
+            self.goal_position = np.array([self.ghost_state_pursuer[[0,4,8]], self.ghost_state_pursuer[[0,4,8]]])
+        elif GHOST_AGENT == "pursuer":
+            self.goal_position = np.array([self.ghost_state_evader[[0,4,8]], self.ghost_state_evader[[0,4,8]]])
+        else:
+            self.goal_position = np.array([self.ghost_state_evader[[0,4,8]], self.ghost_state_pursuer[[0,4,8]]])
+        
+        self.k_T = 0.83 if not MODE == "deepreach" else self.dynamics.k_T
+        self.k_T_actual = self.k_T
+        self.Gz = 9.81 if not MODE == "deepreach" else self.dynamics.Gz
+
+        self.calibrated = False
     
     def flight_status_callback(self, msg):
         if msg.data:
+            if CALIBRATE_FIRST and not self.in_flight and not self.calibrated:
+                self.get_logger().info("CALIBRATING CONTROLLER NOW...")
+                self.calibration_timer = self.create_timer(5.0, self.calibrate_controller_callback)
             self.in_flight = True
         
     def _param_to_dict(self, param_ros):
@@ -420,10 +451,57 @@ class DeepReach20DControllerGhost(TemplateController):
         u = dynamics.optimal_control(state_tensor, dv[..., 1:])
         d = dynamics.optimal_disturbance(state_tensor, dv[..., 1:])
         return u, d, value, dv, boundary_value
+    
+    def calibrate_controller_callback(self):
+        calibration_state = np.zeros(3)
+        calibration_state = self.state[:3]
+        
+        self.get_logger().info(f"[CALIBRATION] -- Current u_target: {self.u_hover[3]}")
+        self.get_logger().info(f"[CALIBRATION] -- Calibrating controller at position: {calibration_state}")
+        
+        avg_state = np.mean(np.array(self.state_pos_buffer), axis=0)
+        deviation_z = avg_state[2] - 1.0
+        thrust_offset = self.gain_matrix[3, 2] * deviation_z
+        self.u_hover[3] += thrust_offset
+        self.calibration_counter += 1
+        self.k_T_actual = self.Gz / self.u_hover[3]
 
+        self.get_logger().info(f"[CALIBRATION] -- Calibration deviation: {deviation_z:.2f}")
+        self.get_logger().info(f"[CALIBRATION] -- Thrust offset: {thrust_offset:.2f}")
+        self.get_logger().info(f"[CALIBRATION] -- New thrust target: {self.u_hover[3]:.2f}, k_T_actual: {self.k_T_actual:.2f}")
+        
+        if self.calibration_counter >= 4:
+            self.get_logger().info(f"[CALIBRATION] DONE -- u_hover: {self.u_hover[3]:.2f}, k_T_actual: {self.k_T_actual}")
+            self.calibration_timer.cancel()
+            self.calibrated = True
+    
     def __call__(self, state):
+        if self.calibrated or not CALIBRATE_FIRST:
+            return self.call_pe(state)
+        else:
+            return self.call_lqr(state)
+
+    def call_lqr(self, state):
         """
-        Main control function for torque/thrust control
+        LQR stabilization for calibration
+        """
+        states = np.array(state).reshape(self.nbr_flying_robots, -1)
+        self.state_pos_buffer.append(states[0][0:3])
+        u = np.zeros((self.nbr_flying_robots, 4))
+
+        for i, state in enumerate(states):
+            euler_angles = rowan.to_euler(([state[9], state[6], state[7], state[8]]), "xyz")
+            yaw = euler_angles[2]
+            near_hover_state = np.concatenate([state[0:6], np.array([yaw])])
+            u[i] = self.u_hover + self.gain_matrix @ (near_hover_state - np.concatenate((self.goal_position[i], np.zeros(4))))
+            u[i, :2] = np.clip(u[i, :2], -0.2, 0.2)
+            u[i, 3] = np.clip(u[i, 3], 4.0, 16.0)  
+
+        return u.flatten()
+
+    def call_pe(self, state):
+        """
+        Main control function for pursuit-evasion control
         
         Args:
             state: Array containing state data for all robots
