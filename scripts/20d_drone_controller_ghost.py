@@ -45,9 +45,9 @@ CONTROLLER_RATE = 30.   # NOTE: WILL TRIED 50, 30, 10 --> 30 maybe best?
 GHOST_AGENT = ["pursuer", "evader", "both", "none"][0]
 GHOST_EVADER_SLOW_FACTOR = 0.5 # 0.5 # takes factor * step_size in integration
 GHOST_PURSUER_SIMPLE = False
-GHOST_EVADER_SIMPLE = True
+GHOST_EVADER_SIMPLE = False
 SIMPLE_RADIUS = 1.5
-SIMPLE_FREQ = 0.05
+SIMPLE_FREQ = 0.01
 SIMPLE_HEIGHT = 1.
 
 TWOPLAYER_MODEL_NAME = "20d_MPC_halfellipse_omega2"
@@ -68,9 +68,10 @@ BETA_SMOOTHING = 2.
 LOAD_PRESOLVED_EVADER_TRAJ = False  # Whether to load a presolved trajectory for the evader agent
 PRESOLVED_EVADER_FILE = "EVADER_STATES_20drones_pursuerghost_ic2_20250903_205521.npz"  # File containing presolved evader trajectory
 
-WAYPOINT_CONTROL = True # send iterative waypoints to follow rather than RPYT control
-WP_INTEGRATION_HZN = 0.1 # how far to integrate trajectory for next waypoint
+WAYPOINT_CONTROL = False # send iterative waypoints to follow (rather than RPYT control)
+WP_INTEGRATION_HZN = 0.15 # how far to integrate trajectory for next waypoint
 # WP_RATE_PER_CTRL = 5 # waypoint publications per control actions, hence true freq = CONTROLLER_RATE / WP_RATE_PER_CTRL  # Not used
+INTEG_STRETCH_FACTOR = 0.75 # stretch the time_step s.t. xi <- xi + stretch * dt * f(xi, ui, di)
 
 class DeepReach20DControllerGhost(TemplateController):
     def __init__(self, node_name='deepreach_20d_controller_ghost'):
@@ -97,9 +98,9 @@ class DeepReach20DControllerGhost(TemplateController):
 
         ## 2 - OFFSET ##
         elif INIT_SETUP == 2:
-            self.ghost_state_evader = np.array([-0.3, 0., 0., 0., 0.2, 0., 0., 0., 0.3, 0.])  # Initial EVADER ghost position 
+            # self.ghost_state_evader = np.array([-0.3, 0., 0., 0., 0.2, 0., 0., 0., 0.3, 0.])  # Initial EVADER ghost position 
             # self.ghost_state_pursuer = np.array([0.3, 0., 0., 0., -0.2, 0., 0., 0., 0.7, 0.])  # Initial PURSUER ghost position
-            # self.ghost_state_evader = np.array([0.3, 0., 0., 0., -0.2, 0., 0., 0., 1.0, 0.])  # Initial EVADER ghost position 
+            self.ghost_state_evader = np.array([0.3, 0., 0., 0., -0.2, 0., 0., 0., 1.0, 0.])  # Initial EVADER ghost position 
             self.ghost_state_pursuer = np.array([-0.3, 0., 0., 0., 0.2, 0., 0., 0., 0.5, 0.])  # Initial PURSUER ghost position
 
         ## 3 - DIFF HEIGHTS ##
@@ -718,26 +719,55 @@ class DeepReach20DControllerGhost(TemplateController):
             
             ## Integrate from current state ##
             if self.in_flight: 
-
+                # self.get_logger().info(f"xi[xp, yp] BEFORE: {(xi[0].item(), xi[4].item())}")
+                # self.get_logger().info(f"thetax: {xi[2]}, thetay: {xi[6]}")
                 f = self.dynamics.dsdt(xi, ui, di)
-                xi = xi + self.dt * f.squeeze(0) ## FIXME FE -> RK4
+                xi = xi + INTEG_STRETCH_FACTOR * self.dt * f.squeeze(0) ## FIXME FE -> RK4
+                # self.get_logger().info(f"xi: {xi}")
+
+                # self.get_logger().info(f"thetax: {xi[2]}, thetay: {xi[6]}")
                 for i in range(int(WP_INTEGRATION_HZN / self.dt) - 1):
 
                     ui, di, _, _ = self.get_control_and_disturbance(xi)
+                    # self.get_logger().info(f"ui: {ui}")
+                    # self.get_logger().info(f"di: {di}")
+                    
                     f = self.dynamics.dsdt(xi, ui, di)
-                    xi = xi + self.dt * f.squeeze(0) ## FIXME FE -> RK4
+                    xi = xi + INTEG_STRETCH_FACTOR * self.dt * f.squeeze(0) ## FIXME FE -> RK4
+                    # self.get_logger().info(f"theta_x: {xi[2]}, theta_y: {xi[6]}")
+                #     self.get_logger().info(f"        ui         INTER: {[ui[0, j].item() for j in range(3)]}")
+                #     self.get_logger().info(f"        xi[xp, yp] INTER: {(xi[0].item(), xi[4].item())}")
+                # self.get_logger().info(f"xi[xp, yp] AFTER: {(xi[0].item(), xi[4].item())}")
+                self.wp_iteration += 1
 
             # [x1, v1_x, θ1_x, ω1_x, y1, v1_y, θ1_y, ω1_y, z1, v1_z]
             # TEST CIRCLE WAYPOINTS
-            self.evader_wp_state = np.array([2. * np.cos(0.05 * self.iteration), 1. * np.cos(0.05 * self.iteration), 0., 0., 2. * np.sin(0.05 * self.iteration), -1. * np.sin(0.05 * self.iteration), 0., 0., 1., 0.])
+            # self.evader_wp_state = np.array([2. * np.cos(0.05 * self.iteration), 1. * np.cos(0.05 * self.iteration), 0., 0., 2. * np.sin(0.05 * self.iteration), -1. * np.sin(0.05 * self.iteration), 0., 0., 1., 0.])
             # self.evader_wp_state = np.array([0., 0., 0., 0., 0., 0., 0., 0., 0.5, 0.])
             # self.pursuer_wp_state = np.array([0., 0., 0., 0., 0., 0., 0., 0., 0.5, 0.])
             # if self.in_flight:  # Figure 8 implementation
             #     self.circle_iteration += 1
             #     self.evader_wp_state[0] = 2. * np.sin(0.03 * self.circle_iteration)
             #     self.evader_wp_state[4] = 2. * np.sin(2 * 0.03 * self.circle_iteration)
-            self.evader_wp_state = xi[0:10].cpu().numpy()  # Compute next evader state  # TEMP COMMENTED OUT ST
-            self.pursuer_wp_state = xi[10:20].cpu().numpy()  # Compute next pursuer state  # TEMP COMMENTED OUT ST
+
+            if GHOST_AGENT == "pursuer":
+                self.evader_wp_state = xi[0:10].cpu().numpy()  # Compute next evader state
+                self.pursuer_wp_state = self.ghost_state_pursuer  # Compute next evader state
+
+            elif GHOST_AGENT == "evader":
+                self.evader_wp_state = self.ghost_state_evader  # Compute next evader state
+                self.pursuer_wp_state = xi[10:20].cpu().numpy()  # Compute next evader state
+
+            elif GHOST_AGENT == "both":
+                self.evader_wp_state = self.ghost_state_evader  # Compute next evader state
+                self.pursuer_wp_state = self.ghost_state_pursuer  # Compute next evader state
+
+            elif GHOST_AGENT == "none":
+                self.evader_wp_state = xi[0:10].cpu().numpy()  # Compute next evader state
+                self.pursuer_wp_state = xi[10:20].cpu().numpy()  # Compute next evader state
+
+            else:
+                raise AssertionError(f"Ghost Agent {GHOST_AGENT} unrecognized!")
 
             # FIX ANGLES FOR NOW
             # self.evader_wp_state[2] = 0.
@@ -762,6 +792,7 @@ class DeepReach20DControllerGhost(TemplateController):
             
             # self.get_logger().info(f"Evader wp state: {self.evader_wp_state}")
             # self.get_logger().info(f"evader quat: {evader_quat}, norm={np.linalg.norm(evader_quat)}")
+
             # if np.linalg.norm(evader_quat) != 1.:
             #     raise AssertionError(f"Sending Bad quaternion: quat={evader_quat}, norm={np.linalg.norm(evader_quat)}")
 
@@ -894,6 +925,11 @@ class DeepReach20DControllerGhost(TemplateController):
                 }
             }
             self.log_data.append(log_entry)
+
+        # if self.in_flight:
+        #     self.get_logger().info(f"WP ITER: {self.wp_iteration}")
+            # if self.wp_iteration == 5:
+            #     raise KeyboardInterrupt
 
         self.iteration += 1
         return u.flatten() # FIXME do we still want to flatten for WAYPOINT_CONTROL
