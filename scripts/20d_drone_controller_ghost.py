@@ -36,13 +36,18 @@ else:
 np.set_printoptions(precision=2, suppress=True, floatmode='fixed')
 
 MODE = ["hover", "deepreach"][1]  # Default to deepreach mode
-GHOST_AGENT = ["pursuer", "evader", "both", "none"][1]
 GHOST_CONTROL_MODE = ["hover", "circle", "deepreach"][2]  # How to control the ghost agent (NOTE only when GHOST_AGENT is not "both")
 INIT_SETUP = 2
 LOOKBACK_TIME = 1. # deepreach
-CONTROLLER_RATE = 30.   # NOTE: WILL TRIED 50, 30, 10 --> 30 maybe best?
+CONTROLLER_RATE = 50.   # NOTE: WILL TRIED 50, 30, 10 --> 30 maybe best?
 
 GHOST_AGENT = ["pursuer", "evader", "both", "none"][0]
+CLAMP_RPYT_CONTROLS = True
+REAL_TORQUE_MAG = 0.1
+REAL_THRUST_MAX = 10.
+REAL_THRUST_MIN = 8.5
+
+GHOST_PURSUER_SLOW_FACTOR = 1. # 0.5 # takes factor * step_size in integration 
 GHOST_EVADER_SLOW_FACTOR = 0.5 # 0.5 # takes factor * step_size in integration
 GHOST_PURSUER_SIMPLE = False
 GHOST_EVADER_SIMPLE = False
@@ -316,6 +321,7 @@ class DeepReach20DControllerGhost(TemplateController):
         
         self.start_controller()
         self.iteration = 0
+        self.wp_iteration = 0
 
         # Initialize JSON logging
         self.log_data = []
@@ -469,6 +475,7 @@ class DeepReach20DControllerGhost(TemplateController):
                     
                     # Convert quaternion from [qx, qy, qz, qw] to [qw, qx, qy, qz] format for rowan
                     quat = np.array([quat_raw[3], quat_raw[0], quat_raw[1], quat_raw[2]])  # [qw, qx, qy, qz]
+                    # self.get_logger().info(f"agent {i} quat: {quat}, norm={np.linalg.norm(quat)}")
                     
                     # Convert quaternion to Euler angles to get roll and pitch
                     euler_angles = rowan.to_euler(quat, "xyz")
@@ -546,7 +553,7 @@ class DeepReach20DControllerGhost(TemplateController):
                                                           0., 0., 
                                                           SIMPLE_HEIGHT, #z
                                                           0.])
-
+                        
                 elif GHOST_AGENT == "both":
                     drone_20d_state[0:10] = self.ghost_state_evader
                     drone_20d_state[10:20] = self.ghost_state_pursuer
@@ -587,20 +594,44 @@ class DeepReach20DControllerGhost(TemplateController):
             # Extract control inputs from DeepReach
             # Control: [S1_x, S1_y, T1_z] (evader)
             # Disturbance: [S2_x, S2_y, T2_z] (pursuer)
+
+            max_torque = self.dynamics.max_torque
+            max_thrust = self.dynamics.thrust_max
+
+            if CLAMP_RPYT_CONTROLS and not WAYPOINT_CONTROL:
+
+                raw_thrust_max = REAL_THRUST_MAX/16.
+                raw_thrust_min = REAL_THRUST_MIN/16.
+                raw_torque_mag = REAL_TORQUE_MAG/0.3
+                 # NOTE: these could be defined wrt self.dynamics, but could change with new models
+                
+                min_vals = torch.tensor([-raw_torque_mag, -raw_torque_mag, raw_thrust_min], device='cuda:0')     # e.g., lower bound is 0
+                max_vals = torch.tensor([ raw_torque_mag,  raw_torque_mag, raw_thrust_max], device='cuda:0')    # e.g., element-wise upper bounds
+
+                optimal_u = torch.max(torch.min(optimal_u, max_vals), min_vals)
+                # optimal_d = torch.max(torch.min(optimal_d, max_vals), min_vals)
+            
+            if self.in_flight:
+                self.get_logger().info(f"DRONE_20d_STATE (EVADER[xp, yp]) {(drone_20d_state[0], drone_20d_state[4])}")
+                self.get_logger().info(f"INITIAL OPTIMAL U {optimal_u}")
+                self.get_logger().info(f"INITIAL OPTIMAL D {optimal_d}")
+            
             evader_control = np.array([
-                self.dynamics.max_torque * optimal_u[0, 0].item(),  # S1_x
-                self.dynamics.max_torque * optimal_u[0, 1].item(),  # S1_y
+                max_torque * optimal_u[0, 0].item(),  # S1_x
+                max_torque * optimal_u[0, 1].item(),  # S1_y
                 # self.dynamics.thrust_max * self.dynamics.k_T * optimal_u[0, 2].item()   # T1_z  # FIXME: Check whether this is correct
-                self.dynamics.thrust_max * optimal_u[0, 2].item()   # T1_z
+                max_thrust * optimal_u[0, 2].item()   # T1_z
             ])
             pursuer_control = np.array([
-                self.dynamics.max_torque * optimal_d[0, 0].item(),  # S2_x
-                self.dynamics.max_torque * optimal_d[0, 1].item(),  # S2_y
+                max_torque * optimal_d[0, 0].item(),  # S2_x
+                max_torque * optimal_d[0, 1].item(),  # S2_y
                 # self.dynamics.thrust_max * self.dynamics.k_T * optimal_d[0, 2].item()   # T2_z
-                self.dynamics.thrust_max * optimal_d[0, 2].item()   # T2_z
+                max_thrust * optimal_d[0, 2].item()   # T2_z
             ])
 
-            # self.get_logger().info(f"Evader control: {evader_control}")
+            self.get_logger().info(f"REAL OPTIMAL U: {evader_control}")
+            self.get_logger().info(f"max torque {self.dynamics.max_torque}")
+            self.get_logger().info(f"max thrust {self.dynamics.thrust_max}")
             # self.get_logger().info(f"Pursuer control: {pursuer_control}")
             # self.get_logger().info(f"value: {value.item():.4f}")
             # self.get_logger().info(f"ellx: {ellx.item():.4f}")
