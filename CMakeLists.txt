@@ -30,6 +30,7 @@ install(PROGRAMS
   scripts/20d_drone_controller_ghost.py
   scripts/deepreach_controller_test.py
   scripts/6d_test.py
+  scripts/calibration_controller.py
   DESTINATION lib/${PROJECT_NAME})
 
 rosidl_generate_interfaces(${PROJECT_NAME}
