@@ -42,8 +42,14 @@ INIT_SETUP = 2
 LOOKBACK_TIME = 1. # deepreach
 CONTROLLER_RATE = 30.   # NOTE: WILL TRIED 50, 30, 10 --> 30 maybe best?
 
+GHOST_AGENT = ["pursuer", "evader", "both"][2]
 GHOST_PURSUER_SLOW_FACTOR = 0.5 # 0.5 # takes factor * step_size in integration 
 GHOST_EVADER_SLOW_FACTOR = 0.5 # 0.5 # takes factor * step_size in integration
+GHOST_PURSUER_SIMPLE = False
+GHOST_EVADER_SIMPLE = True
+SIMPLE_RADIUS = 1.5
+SIMPLE_FREQ = 0.05
+SIMPLE_HEIGHT = 1.
 
 TWOPLAYER_MODEL_NAME = "20d_MPC_halfellipse_omega2"
 
@@ -500,6 +506,28 @@ class DeepReach20DControllerGhost(TemplateController):
                     drone_20d_state[10:20] = self.ghost_state_pursuer
                     yawrates[0] = 2.0 * yaw
 
+                    if GHOST_PURSUER_SIMPLE:
+                        # CIRCLE
+                        drone_20d_state[10:20] = np.array([SIMPLE_RADIUS * np.cos(SIMPLE_FREQ * self.iteration), # x
+                                                          SIMPLE_RADIUS * SIMPLE_FREQ * CONTROLLER_RATE * np.cos(SIMPLE_FREQ * self.iteration), # vx
+                                                          0., 0., 
+                                                          SIMPLE_RADIUS * np.sin(SIMPLE_FREQ * self.iteration), # y 
+                                                          -SIMPLE_RADIUS * SIMPLE_FREQ * CONTROLLER_RATE * np.sin(SIMPLE_FREQ * self.iteration), # vy
+                                                          0., 0., 
+                                                          SIMPLE_HEIGHT, #z
+                                                          0.])
+
+                    if GHOST_PURSUER_SIMPLE:
+                        # CIRCLE
+                        drone_20d_state[10:20] = np.array([SIMPLE_RADIUS * np.cos(SIMPLE_FREQ * self.iteration), # x
+                                                          SIMPLE_RADIUS * SIMPLE_FREQ * CONTROLLER_RATE * np.cos(SIMPLE_FREQ * self.iteration), # vx
+                                                          0., 0., 
+                                                          SIMPLE_RADIUS * np.sin(SIMPLE_FREQ * self.iteration), # y 
+                                                          -SIMPLE_RADIUS * SIMPLE_FREQ * CONTROLLER_RATE * np.sin(SIMPLE_FREQ * self.iteration), # vy
+                                                          0., 0., 
+                                                          SIMPLE_HEIGHT, #z
+                                                          0.])
+
                 elif GHOST_AGENT == "evader":  # Live Drone 2 (pursuer)
                     # [x2, v2_x, θ2_x, ω2_x, y2, v2_y, θ2_y, ω2_y, z2, v2_z]
                     drone_20d_state[10] = pos[0]  # x2
@@ -517,9 +545,53 @@ class DeepReach20DControllerGhost(TemplateController):
                     drone_20d_state[0:10] = self.ghost_state_evader
                     yawrates[0] = 2.0 * yaw
 
+                    if GHOST_EVADER_SIMPLE:
+                        # CIRCLE
+                        drone_20d_state[0:10] = np.array([SIMPLE_RADIUS * np.cos(SIMPLE_FREQ * self.iteration), # x
+                                                          SIMPLE_RADIUS * SIMPLE_FREQ * CONTROLLER_RATE * np.cos(SIMPLE_FREQ * self.iteration), # vx
+                                                          0., 0., 
+                                                          SIMPLE_RADIUS * np.sin(SIMPLE_FREQ * self.iteration), # y 
+                                                          -SIMPLE_RADIUS * SIMPLE_FREQ * CONTROLLER_RATE * np.sin(SIMPLE_FREQ * self.iteration), # vy
+                                                          0., 0., 
+                                                          SIMPLE_HEIGHT, #z
+                                                          0.])
+
+                    if GHOST_EVADER_SIMPLE:
+                        # CIRCLE
+                        drone_20d_state[0:10] = np.array([SIMPLE_RADIUS * np.cos(SIMPLE_FREQ * self.iteration), # x
+                                                          SIMPLE_RADIUS * SIMPLE_FREQ * CONTROLLER_RATE * np.cos(SIMPLE_FREQ * self.iteration), # vx
+                                                          0., 0., 
+                                                          SIMPLE_RADIUS * np.sin(SIMPLE_FREQ * self.iteration), # y 
+                                                          -SIMPLE_RADIUS * SIMPLE_FREQ * CONTROLLER_RATE * np.sin(SIMPLE_FREQ * self.iteration), # vy
+                                                          0., 0., 
+                                                          SIMPLE_HEIGHT, #z
+                                                          0.])
+
                 elif GHOST_AGENT == "both":
                     drone_20d_state[0:10] = self.ghost_state_evader
                     drone_20d_state[10:20] = self.ghost_state_pursuer
+
+                    if GHOST_PURSUER_SIMPLE:
+                        # CIRCLE
+                        drone_20d_state[10:20] = np.array([SIMPLE_RADIUS * np.cos(SIMPLE_FREQ * self.iteration), # x
+                                                          SIMPLE_RADIUS * SIMPLE_FREQ * CONTROLLER_RATE * np.cos(SIMPLE_FREQ * self.iteration), # vx
+                                                          0., 0., 
+                                                          SIMPLE_RADIUS * np.sin(SIMPLE_FREQ * self.iteration), # y 
+                                                          -SIMPLE_RADIUS * SIMPLE_FREQ * CONTROLLER_RATE * np.sin(SIMPLE_FREQ * self.iteration), # vy
+                                                          0., 0., 
+                                                          SIMPLE_HEIGHT, #z
+                                                          0.])
+                        
+                    if GHOST_EVADER_SIMPLE:
+                        # CIRCLE
+                        drone_20d_state[0:10] = np.array([SIMPLE_RADIUS * np.cos(SIMPLE_FREQ * self.iteration), # x
+                                                          SIMPLE_RADIUS * SIMPLE_FREQ * CONTROLLER_RATE * np.cos(SIMPLE_FREQ * self.iteration), # vx
+                                                          0., 0., 
+                                                          SIMPLE_RADIUS * np.sin(SIMPLE_FREQ * self.iteration), # y 
+                                                          -SIMPLE_RADIUS * SIMPLE_FREQ * CONTROLLER_RATE * np.sin(SIMPLE_FREQ * self.iteration), # vy
+                                                          0., 0., 
+                                                          SIMPLE_HEIGHT, #z
+                                                          0.])
 
                 else:
                     raise ValueError(f"Unknown GHOST_AGENT: {GHOST_AGENT}")
