@@ -41,23 +41,24 @@ GHOST_CONTROL_MODE = ["hover", "circle", "deepreach"][2]  # How to control the g
 INIT_SETUP = 2
 LOOKBACK_TIME = 1. # deepreach
 CONTROLLER_RATE = 50.   # NOTE: WILL TRIED 50, 30, 10 --> 30 maybe best?
-CALIBRATE_FIRST = True
+CALIBRATE_FIRST = False
 
-GHOST_AGENT = ["pursuer", "evader", "both", "none"][0]
-CLAMP_RPYT_CONTROLS = True
+GHOST_AGENT = ["pursuer", "evader", "both", "none"][2]
+CLAMP_RPYT_CONTROLS = False
 REAL_TORQUE_MAG = 0.1
-REAL_THRUST_MAX = 10.
+# REAL_THRUST_MAX = 10.
+REAL_THRUST_MAX = 10.5
 REAL_THRUST_MIN = 8.5
 
 GHOST_PURSUER_SLOW_FACTOR = 1. # 0.5 # takes factor * step_size in integration 
-GHOST_EVADER_SLOW_FACTOR = 0.5 # 0.5 # takes factor * step_size in integration
+GHOST_EVADER_SLOW_FACTOR = 1.0 # 0.5 # takes factor * step_size in integration
 GHOST_PURSUER_SIMPLE = False
 GHOST_EVADER_SIMPLE = False
 SIMPLE_RADIUS = 1.5
-SIMPLE_FREQ = 0.01
+SIMPLE_FREQ = 0.05
 SIMPLE_HEIGHT = 1.
 
-TWOPLAYER_MODEL_NAME = "20d_MPC_halfellipse_omega2"
+TWOPLAYER_MODEL_NAME = "ellipsoid_2s_lowerbounds" # "20d_MPC_halfellipse_omega2", "halfellipse_1s_lowerbounds"
 
 TWOPLAYER_MODEL_FOLLOW_NAME = "20d_MPC_halfellipse_flipped_omega2"
 USE_FOLLOW_FILTER = False # Whether to apply the follow strategy for the pursuer
@@ -65,7 +66,7 @@ FOLLOW_VALUE_THRESHOLD = 0.1 # If value fn > threshold, switch to follow strateg
 
 USE_PURSUER_ARENA_FILTER = True # Use add'l value fn to contain agents (MODE = "deepreach" only)
 USE_EVADER_ARENA_FILTER = True
-SINGLEAGENT_MODEL_NAME = "Drone10D_2omega_box"
+SINGLEAGENT_MODEL_NAME = "Drone10D_MPC_box" # "lowerbounds_lowthrust", "Drone10D_MPC_box", "Drone10D_omega2_box"
 EVADER_ARENA_VALUE_THRESHOLD = 0.1
 PURSUER_ARENA_VALUE_THRESHOLD = 0.1 # If arena val fn < threshold, switch to stay-in-box strategy
 
@@ -105,10 +106,11 @@ class DeepReach20DControllerGhost(TemplateController):
 
         ## 2 - OFFSET ##
         elif INIT_SETUP == 2:
-            # self.ghost_state_evader = np.array([-0.3, 0., 0., 0., 0.2, 0., 0., 0., 0.3, 0.])  # Initial EVADER ghost position 
-            # self.ghost_state_pursuer = np.array([0.3, 0., 0., 0., -0.2, 0., 0., 0., 0.7, 0.])  # Initial PURSUER ghost position
-            self.ghost_state_evader = np.array([0.3, 0., 0., 0., -0.2, 0., 0., 0., 1.0, 0.])  # Initial EVADER ghost position 
-            self.ghost_state_pursuer = np.array([-0.3, 0., 0., 0., 0.2, 0., 0., 0., 0.5, 0.])  # Initial PURSUER ghost position
+            self.ghost_state_evader = np.array([0.3, 0., 0., 0., 0.2, 0., 0., 0., 0.7, 0.])  # Initial EVADER ghost position 
+            self.ghost_state_pursuer = np.array([-0.3, 0., 0., 0., -0.2, 0., 0., 0., 0.5, 0.])  # Initial PURSUER ghost position
+            # self.ghost_state_evader = np.array([0.3, 0., 0., 0., -0.2, 0., 0., 0., 1.0, 0.])  # Initial EVADER ghost position 
+            # self.ghost_state_evader = np.array([0.5, 0., 0., 0., -0.4, 0., 0., 0., 1.0, 0.])  # Initial EVADER ghost position  TEMP TEMP
+            # self.ghost_state_pursuer = np.array([-0.3, 0., 0., 0., 0.2, 0., 0., 0., 0.5, 0.])  # Initial PURSUER ghost position
 
         ## 3 - DIFF HEIGHTS ##
         elif INIT_SETUP == 3:
@@ -244,6 +246,7 @@ class DeepReach20DControllerGhost(TemplateController):
         twoplayer_model_path = f"deepreach/saved_models/Drones20D/{TWOPLAYER_MODEL_NAME}"
         with open(os.path.join(twoplayer_model_path, "orig_opt.pickle"), 'rb') as f:
             self.orig_opt = pickle.load(f)
+
         
         # Initialize DeepReach components if using deepreach mode
         if MODE == "deepreach":
@@ -336,8 +339,14 @@ class DeepReach20DControllerGhost(TemplateController):
         self.first_out_of_bounds_time = None
 
         # For calibration
-        self.state_pos_buffer = deque([], int(0.2 * 50.))
+        self.calibrated = False
         self.calibration_counter = 0
+        self.Gz = -9.81 if not MODE == "deepreach" else self.dynamics.Gz
+        self.k_T = 0.83 if not MODE == "deepreach" else self.dynamics.k_T
+        self.k_T_actual_evader = self.k_T
+        self.k_T_actual_pursuer = self.k_T
+        self.state_pos_buffer_evader = deque([], int(0.2 * 50.))
+        self.state_pos_buffer_pursuer = deque([], int(0.2 * 50.))
         gain_matrix = np.zeros((4, 7))
         gain_matrix[0, 1] = -0.2  # y -> roll
         gain_matrix[0, 4] = -0.2  # v_y -> roll
@@ -347,25 +356,20 @@ class DeepReach20DControllerGhost(TemplateController):
         gain_matrix[3, 2] = -10.0  # z -> thrust
         gain_matrix[3, 5] = -10.0  # v_z -> thrust
         self.gain_matrix = gain_matrix
-        self.u_hover = np.array([0.0, 0.0, 0.0, 10.5]) 
+        self.u_hover_evader = np.array([0.0, 0.0, 0.0, 10.5]) 
+        self.u_hover_pursuer = np.array([0.0, 0.0, 0.0, 10.5]) 
         if GHOST_AGENT  == "evader":
-            self.goal_position = np.array([self.ghost_state_pursuer[[0,4,8]], self.ghost_state_pursuer[[0,4,8]]])
+            self.goal_position_calibration = np.array([self.ghost_state_pursuer[[0,4,8]], self.ghost_state_pursuer[[0,4,8]]])
         elif GHOST_AGENT == "pursuer":
-            self.goal_position = np.array([self.ghost_state_evader[[0,4,8]], self.ghost_state_evader[[0,4,8]]])
+            self.goal_position_calibration = np.array([self.ghost_state_evader[[0,4,8]], self.ghost_state_evader[[0,4,8]]])
         else:
-            self.goal_position = np.array([self.ghost_state_evader[[0,4,8]], self.ghost_state_pursuer[[0,4,8]]])
-        
-        self.k_T = 0.83 if not MODE == "deepreach" else self.dynamics.k_T
-        self.k_T_actual = self.k_T
-        self.Gz = 9.81 if not MODE == "deepreach" else self.dynamics.Gz
-
-        self.calibrated = False
+            self.goal_position_calibration = np.array([self.ghost_state_evader[[0,4,8]], self.ghost_state_pursuer[[0,4,8]]])
     
     def flight_status_callback(self, msg):
         if msg.data:
-            if CALIBRATE_FIRST and not self.in_flight and not self.calibrated:
+            if CALIBRATE_FIRST and not self.in_flight and not self.calibrated and not GHOST_AGENT == "both":
                 self.get_logger().info("CALIBRATING CONTROLLER NOW...")
-                self.calibration_timer = self.create_timer(5.0, self.calibrate_controller_callback)
+                self.calibration_timer = self.create_timer(2.5, self.calibrate_controller_callback)
             self.in_flight = True
         
     def _param_to_dict(self, param_ros):
@@ -453,30 +457,74 @@ class DeepReach20DControllerGhost(TemplateController):
         return u, d, value, dv, boundary_value
     
     def calibrate_controller_callback(self):
-        calibration_state = np.zeros(3)
-        calibration_state = self.state[:3]
         
-        self.get_logger().info(f"[CALIBRATION] -- Current u_target: {self.u_hover[3]}")
-        self.get_logger().info(f"[CALIBRATION] -- Calibrating controller at position: {calibration_state}")
-        
-        avg_state = np.mean(np.array(self.state_pos_buffer), axis=0)
-        deviation_z = avg_state[2] - 1.0
-        thrust_offset = self.gain_matrix[3, 2] * deviation_z
-        self.u_hover[3] += thrust_offset
-        self.calibration_counter += 1
-        self.k_T_actual = self.Gz / self.u_hover[3]
+        if GHOST_AGENT == "pursuer":
+            avg_state_evader = np.mean(np.array(self.state_pos_buffer_evader), axis=0)
+            self.get_logger().info(f"avg_state_evader: {avg_state_evader}")
+            self.get_logger().info(f"goal: {self.goal_position_calibration}")
+            deviation_z = avg_state_evader[0][2] - self.goal_position_calibration[0][2]
+            thrust_offset = self.gain_matrix[3, 2] * deviation_z
+            self.u_hover_evader[3] += thrust_offset
+            self.calibration_counter += 1
+            self.k_T_actual_evader = -self.Gz / self.u_hover_evader[3]
 
-        self.get_logger().info(f"[CALIBRATION] -- Calibration deviation: {deviation_z:.2f}")
-        self.get_logger().info(f"[CALIBRATION] -- Thrust offset: {thrust_offset:.2f}")
-        self.get_logger().info(f"[CALIBRATION] -- New thrust target: {self.u_hover[3]:.2f}, k_T_actual: {self.k_T_actual:.2f}")
-        
-        if self.calibration_counter >= 4:
-            self.get_logger().info(f"[CALIBRATION] DONE -- u_hover: {self.u_hover[3]:.2f}, k_T_actual: {self.k_T_actual}")
-            self.calibration_timer.cancel()
-            self.calibrated = True
+            self.get_logger().info(f"[CALIBRATION] -- Calibration deviation (evader): {deviation_z:.2f}")
+            self.get_logger().info(f"[CALIBRATION] -- Thrust offset (evader): {thrust_offset:.2f}")
+            self.get_logger().info(f"[CALIBRATION] -- New thrust target (evader): {self.u_hover_evader[3]:.2f}, k_T_actual (evader): {self.k_T_actual_evader:.2f}")
+
+            if self.calibration_counter >= 4:
+                self.get_logger().info(f"[CALIBRATION] DONE -- u_hover (evader): {self.u_hover_evader[3]:.2f}, k_T_actual (evader): {self.k_T_actual_evader:.2f}")
+                self.calibration_timer.cancel()
+                self.calibrated = True
+
+        elif GHOST_AGENT == "evader":
+            avg_state_pursuer = np.mean(np.array(self.state_pos_buffer_pursuer), axis=0)
+            deviation_z = avg_state_pursuer[0][2] - self.goal_position_calibration[1][2]
+            thrust_offset = self.gain_matrix[3, 2] * deviation_z
+            self.u_hover_pursuer[3] += thrust_offset
+            self.calibration_counter += 1
+            self.k_T_actual_pursuer = -self.Gz / self.u_hover_pursuer[3]
+
+            self.get_logger().info(f"[CALIBRATION] -- Calibration deviation (pursuer): {deviation_z:.2f}")
+            self.get_logger().info(f"[CALIBRATION] -- Thrust offset (pursuer): {thrust_offset:.2f}")
+            self.get_logger().info(f"[CALIBRATION] -- New thrust target (pursuer): {self.u_hover_pursuer[3]:.2f}, k_T_actual (pursuer): {self.k_T_actual_pursuer:.2f}")
+
+            if self.calibration_counter >= 4:
+                self.get_logger().info(f"[CALIBRATION] DONE -- u_hover (pursuer): {self.u_hover_pursuer[3]:.2f}, k_T_actual (pursuer): {self.k_T_actual_pursuer:.2f}")
+                self.calibration_timer.cancel()
+                self.calibrated = True
+
+        elif GHOST_AGENT == "none":
+            avg_state_evader = np.mean(np.array(self.state_pos_buffer_evader), axis=0)
+            avg_state_pursuer = np.mean(np.array(self.state_pos_buffer_pursuer), axis=0)
+            deviation_z_evader = avg_state_evader[2] - self.goal_position_calibration[0][2]
+            thrust_offset_evader = self.gain_matrix[3, 2] * deviation_z_evader
+            self.u_hover_evader[3] += thrust_offset_evader
+            self.calibration_counter += 1
+            self.k_T_actual_evader = -self.Gz / self.u_hover_evader[3]
+
+            self.get_logger().info(f"[CALIBRATION] -- Calibration deviation (evader): {deviation_z_evader:.2f}")
+            self.get_logger().info(f"[CALIBRATION] -- Thrust offset (evader): {thrust_offset_evader:.2f}")
+            self.get_logger().info(f"[CALIBRATION] -- New thrust target (evader): {self.u_hover_evader[3]:.2f}, k_T_actual (evader): {self.k_T_actual_evader:.2f}")
+
+            deviation_z_pursuer = avg_state_pursuer[2] - self.goal_position_calibration[1][2]
+            thrust_offset_pursuer = self.gain_matrix[3, 2] * deviation_z_pursuer
+            self.u_hover_pursuer[3] += thrust_offset_pursuer
+            self.calibration_counter += 1
+            self.k_T_actual_pursuer = -self.Gz / self.u_hover_pursuer[3]
+
+            self.get_logger().info(f"[CALIBRATION] -- Calibration deviation (pursuer): {deviation_z_pursuer:.2f}")
+            self.get_logger().info(f"[CALIBRATION] -- Thrust offset (pursuer): {thrust_offset_pursuer:.2f}")
+            self.get_logger().info(f"[CALIBRATION] -- New thrust target (pursuer): {self.u_hover_pursuer[3]:.2f}, k_T_actual (pursuer): {self.k_T_actual_pursuer:.2f}")
+
+            if self.calibration_counter >= 4:
+                self.get_logger().info(f"[CALIBRATION] DONE -- u_hover (evader): {self.u_hover_evader[3]:.2f}, k_T_actual (evader): {self.k_T_actual_evader:.2f}")
+                self.get_logger().info(f"[CALIBRATION] DONE -- u_hover (pursuer): {self.u_hover_pursuer[3]:.2f}, k_T_actual (pursuer): {self.k_T_actual_pursuer:.2f}")
+                self.calibration_timer.cancel()
+                self.calibrated = True
     
     def __call__(self, state):
-        if self.calibrated or not CALIBRATE_FIRST:
+        if self.calibrated or not CALIBRATE_FIRST or GHOST_AGENT == "both":
             return self.call_pe(state)
         else:
             return self.call_lqr(state)
@@ -486,14 +534,26 @@ class DeepReach20DControllerGhost(TemplateController):
         LQR stabilization for calibration
         """
         states = np.array(state).reshape(self.nbr_flying_robots, -1)
-        self.state_pos_buffer.append(states[0][0:3])
+        
+        if GHOST_AGENT == "pursuer":
+            self.state_pos_buffer_evader.append(states[0:3])
+            u_hover = [self.u_hover_evader]
+        elif GHOST_AGENT == "evader":
+            self.state_pos_buffer_pursuer.append(states[0:3])
+            u_hover = [self.u_hover_pursuer]
+        elif GHOST_AGENT == "none":
+            u_hover = [self.u_hover_evader, self.u_hover_pursuer]
+            self.state_pos_buffer_evader.append(states[0][0:3])
+            self.state_pos_buffer_pursuer.append(states[1][0:3])
+        
         u = np.zeros((self.nbr_flying_robots, 4))
 
         for i, state in enumerate(states):
+            
             euler_angles = rowan.to_euler(([state[9], state[6], state[7], state[8]]), "xyz")
             yaw = euler_angles[2]
             near_hover_state = np.concatenate([state[0:6], np.array([yaw])])
-            u[i] = self.u_hover + self.gain_matrix @ (near_hover_state - np.concatenate((self.goal_position[i], np.zeros(4))))
+            u[i] = u_hover[i] + self.gain_matrix @ (near_hover_state - np.concatenate((self.goal_position_calibration[i], np.zeros(4))))
             u[i, :2] = np.clip(u[i, :2], -0.2, 0.2)
             u[i, 3] = np.clip(u[i, 3], 4.0, 16.0)  
 
@@ -673,9 +733,14 @@ class DeepReach20DControllerGhost(TemplateController):
             # Control: [S1_x, S1_y, T1_z] (evader)
             # Disturbance: [S2_x, S2_y, T2_z] (pursuer)
 
+            # Scale controls to actual k_T (newer drones have been stronger)
+            # optimal_u[0, 2] = (self.k_T / self.k_T_actual_evader) * optimal_u[0, 2]
+            # optimal_d[0, 2] = (self.k_T / self.k_T_actual_pursuer) * optimal_d[0, 2] # FIXME for evader
+
+            # Clamp controls for smoother flight
             max_torque = self.dynamics.max_torque
             max_thrust = self.dynamics.thrust_max
-
+            
             if CLAMP_RPYT_CONTROLS and not WAYPOINT_CONTROL:
 
                 raw_thrust_max = REAL_THRUST_MAX/16.
