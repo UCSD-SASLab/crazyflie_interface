@@ -41,7 +41,7 @@ GHOST_CONTROL_MODE = ["hover", "circle", "deepreach"][2]  # How to control the g
 INIT_SETUP = 2
 LOOKBACK_TIME = 1. # deepreach
 CONTROLLER_RATE = 50.   # NOTE: WILL TRIED 50, 30, 10 --> 30 maybe best?
-CALIBRATE_FIRST = False
+CALIBRATE_FIRST = True
 
 GHOST_AGENT = ["pursuer", "evader", "both", "none"][2]
 CLAMP_RPYT_CONTROLS = False
@@ -51,27 +51,27 @@ REAL_THRUST_MAX = 10.5
 REAL_THRUST_MIN = 8.5
 
 GHOST_PURSUER_SLOW_FACTOR = 1. # 0.5 # takes factor * step_size in integration 
-GHOST_EVADER_SLOW_FACTOR = 1.0 # 0.5 # takes factor * step_size in integration
+GHOST_EVADER_SLOW_FACTOR = 1. # 0.5 # takes factor * step_size in integration
 GHOST_PURSUER_SIMPLE = False
 GHOST_EVADER_SIMPLE = False
 SIMPLE_RADIUS = 1.5
 SIMPLE_FREQ = 0.05
 SIMPLE_HEIGHT = 1.
 
-TWOPLAYER_MODEL_NAME = "ellipsoid_2s_lowerbounds" # "20d_MPC_halfellipse_omega2", "halfellipse_1s_lowerbounds"
+TWOPLAYER_MODEL_NAME = "halfellipse_PEonly" # 
 
-TWOPLAYER_MODEL_FOLLOW_NAME = "20d_MPC_halfellipse_flipped_omega2"
+TWOPLAYER_MODEL_FOLLOW_NAME = "halfellipse_PEonly"
 USE_FOLLOW_FILTER = False # Whether to apply the follow strategy for the pursuer
 FOLLOW_VALUE_THRESHOLD = 0.1 # If value fn > threshold, switch to follow strategy
 
 USE_PURSUER_ARENA_FILTER = True # Use add'l value fn to contain agents (MODE = "deepreach" only)
 USE_EVADER_ARENA_FILTER = True
-SINGLEAGENT_MODEL_NAME = "Drone10D_MPC_box" # "lowerbounds_lowthrust", "Drone10D_MPC_box", "Drone10D_omega2_box"
+SINGLEAGENT_MODEL_NAME = "Drone10D_posvel" # "Drone10D_posvel" (BEST) "Drone10D_posvel" # "lowerbounds_lowthrust", "Drone10D_MPC_box", "Drone10D_omega2_box"
 EVADER_ARENA_VALUE_THRESHOLD = 0.1
-PURSUER_ARENA_VALUE_THRESHOLD = 0.1 # If arena val fn < threshold, switch to stay-in-box strategy
+PURSUER_ARENA_VALUE_THRESHOLD = 0.0 # If arena val fn < threshold, switch to stay-in-box strategy
 
 USE_SMOOTH_ARENA_FILTER = True
-BETA_SMOOTHING = 2.
+BETA_SMOOTHING = 1.
 
 LOAD_PRESOLVED_EVADER_TRAJ = False  # Whether to load a presolved trajectory for the evader agent
 PRESOLVED_EVADER_FILE = "EVADER_STATES_20drones_pursuerghost_ic2_20250903_205521.npz"  # File containing presolved evader trajectory
@@ -106,8 +106,8 @@ class DeepReach20DControllerGhost(TemplateController):
 
         ## 2 - OFFSET ##
         elif INIT_SETUP == 2:
-            self.ghost_state_evader = np.array([0.3, 0., 0., 0., 0.2, 0., 0., 0., 0.7, 0.])  # Initial EVADER ghost position 
-            self.ghost_state_pursuer = np.array([-0.3, 0., 0., 0., -0.2, 0., 0., 0., 0.5, 0.])  # Initial PURSUER ghost position
+            self.ghost_state_evader = np.array([0.1, 0., 0., 0., 0.2, 0., 0., 0., 1.0, 0.])  # Initial EVADER ghost position 
+            self.ghost_state_pursuer = np.array([-2.0, 0., 0., 0., -0.2, 0., 0., 0., 1.0, 0.])  # Initial PURSUER ghost position
             # self.ghost_state_evader = np.array([0.3, 0., 0., 0., -0.2, 0., 0., 0., 1.0, 0.])  # Initial EVADER ghost position 
             # self.ghost_state_evader = np.array([0.5, 0., 0., 0., -0.4, 0., 0., 0., 1.0, 0.])  # Initial EVADER ghost position  TEMP TEMP
             # self.ghost_state_pursuer = np.array([-0.3, 0., 0., 0., 0.2, 0., 0., 0., 0.5, 0.])  # Initial PURSUER ghost position
@@ -197,6 +197,53 @@ class DeepReach20DControllerGhost(TemplateController):
             self.pursuer_marker.id = 1
             self.marker_pub.publish(self.pursuer_marker)
 
+        # Publish Arena Box for Visualization
+        line_width = 0.1
+        xmin, ymin, zmin = -4., -2., 0.2
+        xmax, ymax, zmax = 4., 2., 2.0
+        def _Point(x=0.0, y=0.0, z=0.0):
+            point = Point()
+            point.x, point.y, point.z = x, y, z
+            return point    
+            
+        A = _Point(xmin, ymin, zmin)
+        B = _Point(xmax, ymin, zmin)
+        C = _Point(xmax, ymax, zmin)
+        D = _Point(xmin, ymax, zmin)
+        E = _Point(xmin, ymin, zmax)
+        F = _Point(xmax, ymin, zmax)
+        G = _Point(xmax, ymax, zmax)
+        H = _Point(xmin, ymax, zmax)
+        edges = [
+            (A, B), (B, C), (C, D), (D, A),   # bottom rectangle
+            (E, F), (F, G), (G, H), (H, E),   # top rectangle
+            (A, E), (B, F), (C, G), (D, H),   # vertical edges
+        ]
+        arena_pts = []
+        for p, q in edges:
+            arena_pts.append(p)
+            arena_pts.append(q)
+
+        # self.marker_pub_arena = self.create_publisher(Marker, 'arena_box_marker', 10)
+        self.arena_marker = Marker()
+        self.arena_marker.ns = "arena_box"
+        self.arena_marker.header.frame_id = "world"
+        self.arena_marker.type = Marker.LINE_LIST
+        self.arena_marker.action = Marker.ADD
+        self.arena_marker.points = arena_pts
+        self.arena_marker.scale.x = line_width
+        self.arena_marker.scale.y = line_width
+        self.arena_marker.scale.z = line_width
+        self.arena_marker.pose.orientation.w = 1.0
+        self.arena_marker.color.a = 0.5
+        self.arena_marker.color.r = 1.0
+        self.arena_marker.color.g = 1.0
+        self.arena_marker.color.b = 0.0
+        self.arena_marker.id = 2
+        self.arena_marker.lifetime = rclpy.duration.Duration(seconds=0.0).to_msg()  # 0 means forever
+        self.marker_pub.publish(self.arena_marker)
+        # self.marker_pub_arena.publish(arena_marker)
+
         if WAYPOINT_CONTROL:
             if MODE != "deepreach":
                 raise AssertionError("Need deepreach to integrate next waypoint .. unless you want to add the dynamics.")
@@ -266,7 +313,7 @@ class DeepReach20DControllerGhost(TemplateController):
             self.get_logger().info("DeepReach 20D model loaded successfully, modelpath = " + twoplayer_model_path)
             
             if USE_FOLLOW_FILTER:
-                twoplayer_follow_model_path = f"deepreach/saved_models/Drones20D/{TWOPLAYER_MODEL_FOLLOW_NAME}"
+                twoplayer_follow_model_path = f"deepreach/saved_models/Drones20DFollow/{TWOPLAYER_MODEL_FOLLOW_NAME}"
                 with open(os.path.join(twoplayer_follow_model_path, "orig_opt.pickle"), 'rb') as f:
                     self.orig_opt_follow = pickle.load(f)
                 dynamics_class = getattr(dynamics, self.orig_opt_follow.dynamics_class)
@@ -369,7 +416,7 @@ class DeepReach20DControllerGhost(TemplateController):
         if msg.data:
             if CALIBRATE_FIRST and not self.in_flight and not self.calibrated and not GHOST_AGENT == "both":
                 self.get_logger().info("CALIBRATING CONTROLLER NOW...")
-                self.calibration_timer = self.create_timer(2.5, self.calibrate_controller_callback)
+                self.calibration_timer = self.create_timer(3.0, self.calibrate_controller_callback)
             self.in_flight = True
         
     def _param_to_dict(self, param_ros):
@@ -404,7 +451,7 @@ class DeepReach20DControllerGhost(TemplateController):
             
             if USE_SMOOTH_ARENA_FILTER:
                 with torch.no_grad():
-                    value_pos = torch.clamp(value_arena_evader, min=0.0)
+                    value_pos = torch.clamp(value_arena_evader - EVADER_ARENA_VALUE_THRESHOLD, min=0.0)
                     lambda_factor = 1 - torch.exp(-BETA_SMOOTHING * value_pos)
                     optimal_u = (lambda_factor * optimal_u + (1 - lambda_factor) * arena_u_evader)
             else:
@@ -417,7 +464,7 @@ class DeepReach20DControllerGhost(TemplateController):
             
             if USE_SMOOTH_ARENA_FILTER:
                 with torch.no_grad():
-                    value_pos = torch.clamp(value_arena_pursuer, min=0.0)
+                    value_pos = torch.clamp(value_arena_pursuer - EVADER_ARENA_VALUE_THRESHOLD, min=0.0)
                     lambda_factor = 1 - torch.exp(-BETA_SMOOTHING * value_pos)
                     optimal_d = lambda_factor * optimal_d + (1 - lambda_factor) * arena_u_pursuer
             else:
@@ -432,7 +479,8 @@ class DeepReach20DControllerGhost(TemplateController):
 
         time_tensor = torch.tensor([eval_time], dtype=torch.float32, device=device)
         state_tensor = torch.tensor(state, dtype=torch.float32, device=device) if not state_is_tensor else state
-        deepreach_input = torch.cat([time_tensor, state_tensor]).unsqueeze(0)
+        state_tensor_bounded = dynamics.clip_state(state_tensor)
+        deepreach_input = torch.cat([time_tensor, state_tensor_bounded]).unsqueeze(0)
 
         model_results = model(
             {"coords": dynamics.coord_to_input(deepreach_input)}
@@ -451,9 +499,9 @@ class DeepReach20DControllerGhost(TemplateController):
             model_in, model_out.squeeze(dim=-1)
         )
 
-        boundary_value = dynamics.boundary_fn(state_tensor).detach()
-        u = dynamics.optimal_control(state_tensor, dv[..., 1:])
-        d = dynamics.optimal_disturbance(state_tensor, dv[..., 1:])
+        boundary_value = dynamics.boundary_fn(state_tensor_bounded).detach()
+        u = dynamics.optimal_control(state_tensor_bounded, dv[..., 1:])
+        d = dynamics.optimal_disturbance(state_tensor_bounded, dv[..., 1:])
         return u, d, value, dv, boundary_value
     
     def calibrate_controller_callback(self):
@@ -510,7 +558,6 @@ class DeepReach20DControllerGhost(TemplateController):
             deviation_z_pursuer = avg_state_pursuer[2] - self.goal_position_calibration[1][2]
             thrust_offset_pursuer = self.gain_matrix[3, 2] * deviation_z_pursuer
             self.u_hover_pursuer[3] += thrust_offset_pursuer
-            self.calibration_counter += 1
             self.k_T_actual_pursuer = -self.Gz / self.u_hover_pursuer[3]
 
             self.get_logger().info(f"[CALIBRATION] -- Calibration deviation (pursuer): {deviation_z_pursuer:.2f}")
@@ -734,13 +781,13 @@ class DeepReach20DControllerGhost(TemplateController):
             # Disturbance: [S2_x, S2_y, T2_z] (pursuer)
 
             # Scale controls to actual k_T (newer drones have been stronger)
-            # optimal_u[0, 2] = (self.k_T / self.k_T_actual_evader) * optimal_u[0, 2]
-            # optimal_d[0, 2] = (self.k_T / self.k_T_actual_pursuer) * optimal_d[0, 2] # FIXME for evader
+            optimal_u[0, 2] = (self.k_T / self.k_T_actual_evader) * optimal_u[0, 2]
+            optimal_d[0, 2] = (self.k_T / self.k_T_actual_pursuer) * optimal_d[0, 2] # FIXME for evader
 
             # Clamp controls for smoother flight
             max_torque = self.dynamics.max_torque
             max_thrust = self.dynamics.thrust_max
-            
+
             if CLAMP_RPYT_CONTROLS and not WAYPOINT_CONTROL:
 
                 raw_thrust_max = REAL_THRUST_MAX/16.
