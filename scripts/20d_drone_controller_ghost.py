@@ -43,7 +43,7 @@ LOOKBACK_TIME = 1. # deepreach
 CONTROLLER_RATE = 50.   # NOTE: WILL TRIED 50, 30, 10 --> 30 maybe best?
 CALIBRATE_FIRST = True
 
-GHOST_AGENT = ["pursuer", "evader", "both", "none"][2]
+GHOST_AGENT = ["pursuer", "evader", "both", "none"][3]
 CLAMP_RPYT_CONTROLS = False
 REAL_TORQUE_MAG = 0.1
 # REAL_THRUST_MAX = 10.
@@ -58,7 +58,7 @@ SIMPLE_RADIUS = 1.5
 SIMPLE_FREQ = 0.05
 SIMPLE_HEIGHT = 1.
 
-TWOPLAYER_MODEL_NAME = "halfellipse_PEonly" # 
+TWOPLAYER_MODEL_NAME = "halfellipse_PEonly" # "halfellipse_PEonly"
 
 TWOPLAYER_MODEL_FOLLOW_NAME = "halfellipse_PEonly"
 USE_FOLLOW_FILTER = False # Whether to apply the follow strategy for the pursuer
@@ -309,9 +309,26 @@ class DeepReach20DControllerGhost(TemplateController):
         if MODE == "deepreach":
 
             dynamics_class = getattr(dynamics, self.orig_opt.dynamics_class)
-            self.dynamics = dynamics_class(**{argname: getattr(self.orig_opt, argname)
-                          for argname in inspect.signature(dynamics_class).parameters.keys() if argname != 'self'})
+            # Get the signature of the dynamics class constructor
+            sig = inspect.signature(dynamics_class)
             
+            # Build kwargs dict only for parameters that exist in orig_opt and are not None
+            dynamics_kwargs = {}
+            for param_name, param in sig.parameters.items():
+                if param_name == 'self':
+                    continue
+                    
+                # Check if the parameter exists in orig_opt
+                if hasattr(self.orig_opt, param_name):
+                    value = getattr(self.orig_opt, param_name)
+                    # Only add non-None values, or if the parameter has no default (is required)
+                    if value is not None or param.default == inspect.Parameter.empty:
+                        dynamics_kwargs[param_name] = value
+                # If parameter has a default value and doesn't exist in orig_opt, skip it
+                elif param.default == inspect.Parameter.empty:
+                    # This is a required parameter that's missing from orig_opt
+                    raise ValueError(f"Required parameter '{param_name}' not found in orig_opt for {dynamics_class.__name__}")
+            self.dynamics = dynamics_class(**dynamics_kwargs)
             self.model = SingleBVPNet(in_features=self.dynamics.input_dim, out_features=1, type=self.orig_opt.model, mode=self.orig_opt.model_mode,
                              final_layer_factor=1., hidden_features=self.orig_opt.num_nl, num_hidden_layers=self.orig_opt.num_hl,
                              periodic_transform_fn=self.dynamics.periodic_transform_fn)
@@ -327,8 +344,25 @@ class DeepReach20DControllerGhost(TemplateController):
                 with open(os.path.join(twoplayer_follow_model_path, "orig_opt.pickle"), 'rb') as f:
                     self.orig_opt_follow = pickle.load(f)
                 dynamics_class = getattr(dynamics, self.orig_opt_follow.dynamics_class)
-                self.dynamics_follow = dynamics_class(**{argname: getattr(self.orig_opt_follow, argname)
-                            for argname in inspect.signature(dynamics_class).parameters.keys() if argname != 'self'})
+                sig = inspect.signature(dynamics_class)
+                
+                # Build kwargs dict only for parameters that exist in orig_opt and are not None
+                dynamics_kwargs = {}
+                for param_name, param in sig.parameters.items():
+                    if param_name == 'self':
+                        continue
+                        
+                    # Check if the parameter exists in orig_opt
+                    if hasattr(self.orig_opt_follow, param_name):
+                        value = getattr(self.orig_opt_follow, param_name)
+                        # Only add non-None values, or if the parameter has no default (is required)
+                        if value is not None or param.default == inspect.Parameter.empty:
+                            dynamics_kwargs[param_name] = value
+                    # If parameter has a default value and doesn't exist in orig_opt, skip it
+                    elif param.default == inspect.Parameter.empty:
+                        # This is a required parameter that's missing from orig_opt
+                        raise ValueError(f"Required parameter '{param_name}' not found in orig_opt for {dynamics_class.__name__}")
+                self.dynamics_follow = dynamics_class(**dynamics_kwargs)
                 
                 self.model_follow = SingleBVPNet(in_features=self.dynamics_follow.input_dim, out_features=1, type=self.orig_opt_follow.model, mode=self.orig_opt_follow.model_mode,
                                 final_layer_factor=1., hidden_features=self.orig_opt_follow.num_nl, num_hidden_layers=self.orig_opt_follow.num_hl,
@@ -344,14 +378,33 @@ class DeepReach20DControllerGhost(TemplateController):
                 safety_model_path = os.path.join('deepreach/saved_models/Drone10D', SINGLEAGENT_MODEL_NAME)
                 self.get_logger().info("Loading arena containment model from " + safety_model_path)
                 with open(os.path.join(safety_model_path, "orig_opt.pickle"), 'rb') as f:
-                    self.arena_orig_opt = pickle.load(f)
+                    self.orig_opt_arena = pickle.load(f)
+
+                self.get_logger().info(f"Arena orig_opt: {self.orig_opt_arena}")
                 
-                dynamics_class = getattr(dynamics, self.arena_orig_opt.dynamics_class)
-                self.dynamics_arena = dynamics_class(**{argname: getattr(self.arena_orig_opt, argname)
-                              for argname in inspect.signature(dynamics_class).parameters.keys() if argname != 'self'})
+                dynamics_class = getattr(dynamics, self.orig_opt_arena.dynamics_class)
+                sig = inspect.signature(dynamics_class)
                 
-                self.model_arena = SingleBVPNet(in_features=self.dynamics_arena.input_dim, out_features=1, type=self.arena_orig_opt.model, mode=self.arena_orig_opt.model_mode,
-                                 final_layer_factor=1., hidden_features=self.arena_orig_opt.num_nl, num_hidden_layers=self.arena_orig_opt.num_hl,
+                # Build kwargs dict only for parameters that exist in orig_opt and are not None
+                dynamics_kwargs = {}
+                for param_name, param in sig.parameters.items():
+                    if param_name == 'self':
+                        continue
+                        
+                    # Check if the parameter exists in orig_opt
+                    if hasattr(self.orig_opt_arena, param_name):
+                        value = getattr(self.orig_opt_arena, param_name)
+                        # Only add non-None values, or if the parameter has no default (is required)
+                        if value is not None or param.default == inspect.Parameter.empty:
+                            dynamics_kwargs[param_name] = value
+                    # If parameter has a default value and doesn't exist in orig_opt, skip it
+                    elif param.default == inspect.Parameter.empty:
+                        # This is a required parameter that's missing from orig_opt
+                        raise ValueError(f"Required parameter '{param_name}' not found in orig_opt for {dynamics_class.__name__}")
+                self.dynamics_arena = dynamics_class(**dynamics_kwargs)
+                
+                self.model_arena = SingleBVPNet(in_features=self.dynamics_arena.input_dim, out_features=1, type=self.orig_opt_arena.model, mode=self.orig_opt_arena.model_mode,
+                                 final_layer_factor=1., hidden_features=self.orig_opt_arena.num_nl, num_hidden_layers=self.orig_opt_arena.num_hl,
                                  periodic_transform_fn=self.dynamics_arena.periodic_transform_fn)
 
                 checkpoint = torch.load(os.path.join(safety_model_path, "training/checkpoints/model_final.pth"), map_location=device, weights_only=True)
@@ -450,7 +503,7 @@ class DeepReach20DControllerGhost(TemplateController):
 
     def get_control_and_disturbance(self, state):
         optimal_u, optimal_d, value, dv, ellx = self.infer_deepreach(state, LOOKBACK_TIME, self.model, self.dynamics)
-
+        values = {"game": value}
         ## FOLLOW FILTER ##
 
         if USE_FOLLOW_FILTER and value.item() > FOLLOW_VALUE_THRESHOLD:
@@ -463,7 +516,7 @@ class DeepReach20DControllerGhost(TemplateController):
 
         if USE_EVADER_ARENA_FILTER:
             arena_u_evader, _, value_arena_evader, _, box_ellx_evader = self.infer_deepreach(state[0:10], LOOKBACK_TIME, self.model_arena, self.dynamics_arena, state_is_tensor=False)
-            
+            values["arena_evader"] = value_arena_evader
             if USE_SMOOTH_ARENA_FILTER:
                 with torch.no_grad():
                     value_pos = torch.clamp(value_arena_evader - EVADER_ARENA_VALUE_THRESHOLD, min=0.0)
@@ -476,6 +529,7 @@ class DeepReach20DControllerGhost(TemplateController):
 
         if USE_PURSUER_ARENA_FILTER:
             arena_u_pursuer, _, value_arena_pursuer, _, box_ellx_pursuer = self.infer_deepreach(state[10:20], LOOKBACK_TIME, self.model_arena, self.dynamics_arena, state_is_tensor=False)
+            values["arena_pursuer"] = value_arena_pursuer
             
             if USE_SMOOTH_ARENA_FILTER:
                 with torch.no_grad():
@@ -485,9 +539,7 @@ class DeepReach20DControllerGhost(TemplateController):
             else:
                 if value_arena_pursuer.item() < PURSUER_ARENA_VALUE_THRESHOLD or box_ellx_pursuer.item() < 0.0:
                     optimal_d = arena_u_pursuer  
-
-        values = {"game": value, "arena_pursuer": value_arena_pursuer, "arena_evader": value_arena_evader}
-        
+    
         return optimal_u, optimal_d, values, ellx
 
     def infer_deepreach(self, state, eval_time, model, dynamics, state_is_tensor=True):
@@ -846,8 +898,10 @@ class DeepReach20DControllerGhost(TemplateController):
             drone_20d_state_tensor = torch.tensor(drone_20d_state, dtype=torch.float32, device=device)
             optimal_u, optimal_d, values, ellx = self.get_control_and_disturbance(drone_20d_state_tensor)
             value = values["game"]
-            value_arena_pursuer = values["arena_pursuer"]
-            value_arena_evader = values["arena_evader"]
+            if USE_EVADER_ARENA_FILTER:
+                value_arena_evader = values["arena_evader"]
+            if USE_PURSUER_ARENA_FILTER:
+                value_arena_pursuer = values["arena_pursuer"]
 
             # Extract control inputs from DeepReach
             # Control: [S1_x, S1_y, T1_z] (evader)
