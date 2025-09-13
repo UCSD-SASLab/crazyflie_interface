@@ -40,7 +40,7 @@ class CfInterface(Node):
         self.land_service = self.create_client(Land, 'all/land')
         # self.land_service.wait_for_service()
         self.get_logger().info(f"Created takeoff and land services for {self.crazyflie_names}")
-        self.state = [None for _ in self.crazyflie_names]
+        self.state = [None for _ in self.crazyflie_names[:2]]
 
         self.time_init = None
         self.get_logger().info(f"URIs: {self.uris}")
@@ -48,6 +48,8 @@ class CfInterface(Node):
         # Create separate service for each robot
         self.notify_setpointstop_services = {}
         for name in self.crazyflie_names:
+            if name in ["cf233", "cf234"]:
+                continue
             self.notify_setpointstop_services[name] = self.create_client(NotifySetpointsStop, f"{name}/notify_setpoints_stop")
             # self.notify_setpointstop_services[name].wait_for_service()
             self.get_logger().info(f"Created notify_setpoints_stop service for {name}")
@@ -67,11 +69,13 @@ class CfInterface(Node):
         # get backend from parameter server
         self.backend = self._ros_parameters['backend']
         self.get_logger().info("Backend: {}".format(self.backend))
+        self.get_logger().info(f"crazyflie name: {self.crazyflie_names}")
         if self.backend in ["cflib", "sim"]:
             for i, cf_name in enumerate(self.crazyflie_names):
-                uri = self.uris[i]
-                self.get_logger().info(f"Creating subscription for {cf_name} with uri {uri}")
-                self.create_subscription(Odometry, f"{cf_name}/odom", partial(self.callback_state, uri=uri), 1)
+                if cf_name not in ["cf233", "cf234"]:
+                    uri = self.uris[i]
+                    self.get_logger().info(f"Creating subscription for {cf_name} with uri {uri}")
+                    self.create_subscription(Odometry, f"{cf_name}/odom", partial(self.callback_state, uri=uri), 1)
         else: 
             raise NotImplementedError("Backend not yet supported")
         self.state_publisher = self.create_publisher(StateStamped, 'cf_interface/state', 1)
@@ -84,18 +88,20 @@ class CfInterface(Node):
                 self.cmd_vel_publishers = {}
                 self.get_logger().info(f"Setting up cmd_vel publishers for: {self.crazyflie_names}")
                 for name in self.crazyflie_names:
-                    self.cmd_vel_publishers[name] = self.create_publisher(
-                        Twist, f"{name}/cmd_vel_legacy", 1
-                    )
+                    if name not in ["cf233", "cf234"]:
+                        self.cmd_vel_publishers[name] = self.create_publisher(
+                            Twist, f"{name}/cmd_vel_legacy", 1
+                        )
                     self.get_logger().info(f"Created cmd_vel publisher for {name}")
                     # TODO: Add an else option for cmd_full_state and create its associated publisher
             elif CONTROL_MODE == "full_state":
                 self.cmd_full_state_publishers = {}
                 self.get_logger().info(f"Setting up cmd_full_state publishers for: {self.crazyflie_names}")
                 for name in self.crazyflie_names:
-                    self.cmd_full_state_publishers[name] = self.create_publisher(
-                        FullState, f"{name}/cmd_full_state", 1
-                    )
+                    if name not in ["cf233", "cf234"]:
+                        self.cmd_full_state_publishers[name] = self.create_publisher(
+                            FullState, f"{name}/cmd_full_state", 1
+                        )
                 self.FullStateMsg = FullState()
                 self.FullStateMsg.header.frame_id = '/world'
         else:
@@ -167,6 +173,8 @@ class CfInterface(Node):
                 req.group_mask = 0 
                 req.remain_valid_millisecs = 10
                 for name in self.crazyflie_names:
+                    if name in ["cf233", "cf234"]:
+                        continue
                     self.notify_setpointstop_services[name].call_async(req)
                 # 3. Send land command (twice to ensure it is not missed)
                 req = Land.Request()
@@ -196,6 +204,8 @@ class CfInterface(Node):
             if CONTROL_MODE == "control":
                 for _ in range(2):
                     for i, name in enumerate(self.crazyflie_names):
+                        if name in ["cf233", "cf234"]:
+                            continue
                         self.cmd_vel_publishers[name].publish(self.zero_control_out_msg)
             self.destroy_timer(self.takeoff_timer)
         self.in_flight = True
@@ -282,7 +292,7 @@ class CfInterface(Node):
     
     def state_publisher_callback(self):
         # If any state is None, return
-        if any(s is None for s in self.state):
+        if any(s is None for s in self.state[:2]):  # only check first two robots
             self.get_logger().info(f"State not yet initialized", throttle_duration_sec=1.0)
             return
         if not self.state_is_publishing:
@@ -302,6 +312,8 @@ class CfInterface(Node):
         if not self.in_flight:
             return
         for i, name in enumerate(self.crazyflie_names):
+            if name in ["cf233", "cf234"]:
+                continue
             control = np.array(msg.data[16*i:16*(i+1)])
             # self.get_logger().info(f"CONTROL IN cf_interface: {control}")
             ctrl_msg = self.FullStateMsg
@@ -341,12 +353,14 @@ class CfInterface(Node):
 
 
     def callback_control(self, msg):
-        num_robots = len(self.crazyflie_names)
+        num_robots = min(len(self.crazyflie_names), 2)
         assert len(msg.data) == 4 * num_robots
         if not self.in_flight:
             return
         if MODE == "both":
             for i, name in enumerate(self.crazyflie_names):
+                if name in ["cf233", "cf234"]:
+                    continue
                 control = np.array(msg.data[4*i:4*(i+1)])
                 # self.get_logger().info(f"Control for {name}: {control}")
                 control = self.convert_and_clip_control(control)

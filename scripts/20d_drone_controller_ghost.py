@@ -154,7 +154,7 @@ class DeepReach20DControllerGhost(TemplateController):
         self._ros_parameters = self._param_to_dict(self._parameters)
         robots = self._ros_parameters.get('robots', {})
         self.get_logger().info(f"Robots: {robots}")
-        self.nbr_flying_robots = len(robots)
+        self.nbr_flying_robots = min(len(robots), 2)
         if GHOST_AGENT == "none":
             self.nbr_robots = self.nbr_flying_robots
         else:
@@ -466,8 +466,8 @@ class DeepReach20DControllerGhost(TemplateController):
         gain_matrix[3, 2] = -10.0  # z -> thrust
         gain_matrix[3, 5] = -10.0  # v_z -> thrust
         self.gain_matrix = gain_matrix
-        self.u_hover_evader = np.array([0.0, 0.0, 0.0, 10.5]) 
-        self.u_hover_pursuer = np.array([0.0, 0.0, 0.0, 10.5]) 
+        self.u_hover_evader = np.array([0.0, 0.0, 0.0, 14]) 
+        self.u_hover_pursuer = np.array([0.0, 0.0, 0.0, 11]) 
         if GHOST_AGENT  == "evader":
             self.goal_position_calibration = np.array([self.ghost_state_pursuer[[0,4,8]], self.ghost_state_pursuer[[0,4,8]]])
         elif GHOST_AGENT == "pursuer":
@@ -484,7 +484,7 @@ class DeepReach20DControllerGhost(TemplateController):
         if msg.data:
             if CALIBRATE_FIRST and not self.in_flight and not self.calibrated and not GHOST_AGENT == "both":
                 self.get_logger().info("CALIBRATING CONTROLLER NOW...")
-                self.calibration_timer = self.create_timer(3.0, self.calibrate_controller_callback)
+                self.calibration_timer = self.create_timer(4.0, self.calibrate_controller_callback)
             self.in_flight = True
         
     def _param_to_dict(self, param_ros):
@@ -631,7 +631,7 @@ class DeepReach20DControllerGhost(TemplateController):
             self.get_logger().info(f"[CALIBRATION] -- Thrust offset (pursuer): {thrust_offset_pursuer:.2f}")
             self.get_logger().info(f"[CALIBRATION] -- New thrust target (pursuer): {self.u_hover_pursuer[3]:.2f}, k_T_actual (pursuer): {self.k_T_actual_pursuer:.2f}")
 
-            if self.calibration_counter >= 4:
+            if self.calibration_counter >= 10:
                 self.get_logger().info(f"[CALIBRATION] DONE -- u_hover (evader): {self.u_hover_evader[3]:.2f}, k_T_actual (evader): {self.k_T_actual_evader:.2f}")
                 self.get_logger().info(f"[CALIBRATION] DONE -- u_hover (pursuer): {self.u_hover_pursuer[3]:.2f}, k_T_actual (pursuer): {self.k_T_actual_pursuer:.2f}")
                 self.calibration_timer.cancel()
