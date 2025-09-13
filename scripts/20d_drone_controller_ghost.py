@@ -81,6 +81,14 @@ WP_INTEGRATION_HZN = 0.15 # how far to integrate trajectory for next waypoint
 # WP_RATE_PER_CTRL = 5 # waypoint publications per control actions, hence true freq = CONTROLLER_RATE / WP_RATE_PER_CTRL  # Not used
 INTEG_STRETCH_FACTOR = 0.75 # stretch the time_step s.t. xi <- xi + stretch * dt * f(xi, ui, di)
 
+USE_EMERGENCY_ARENA_OVERRIDE = True # Whether to override controls to keep agents in arena
+ARENA_X_LIMIT = 3.8
+ARENA_Y_LIMIT = 1.7
+ARENA_Z_MIN = 0.4
+ARENA_Z_MAX = 2.0
+LQR_OVERRIDE_EXIT_THRESH = 0.5 # When to exit LQR override (exiting agent(s) within this distance of last in bounds pos)
+RESET_PROJ_FACTOR = 0.9 # When resetting to last safe pos, scale reset towards center of arena by this factor (to avoid deadlock)
+
 class DeepReach20DControllerGhost(TemplateController):
     def __init__(self, node_name='deepreach_20d_controller_ghost'):
         self.circle_iteration = 0  # TEMP ST
@@ -93,6 +101,8 @@ class DeepReach20DControllerGhost(TemplateController):
         self.ghost_state_evader = np.zeros(10)
 
         self.in_flight = False
+        self.in_bounds_evader = True
+        self.in_bounds_pursuer = True
         self.create_subscription(Bool, "cf_interface/flight_status", self.flight_status_callback, 1)
 
         ## TEST
@@ -411,7 +421,12 @@ class DeepReach20DControllerGhost(TemplateController):
             self.goal_position_calibration = np.array([self.ghost_state_evader[[0,4,8]], self.ghost_state_evader[[0,4,8]]])
         else:
             self.goal_position_calibration = np.array([self.ghost_state_evader[[0,4,8]], self.ghost_state_pursuer[[0,4,8]]])
-    
+
+        self.last_safe_evader_pos = self.ghost_state_evader[[0,4,8]]
+        self.last_safe_pursuer_pos = self.ghost_state_pursuer[[0,4,8]]
+        self.emergency_lqr_override_evader_inuse = False
+        self.emergency_lqr_override_pursuer_inuse = False
+            
     def flight_status_callback(self, msg):
         if msg.data:
             if CALIBRATE_FIRST and not self.in_flight and not self.calibrated and not GHOST_AGENT == "both":
@@ -605,6 +620,64 @@ class DeepReach20DControllerGhost(TemplateController):
             u[i, 3] = np.clip(u[i, 3], 4.0, 16.0)  
 
         return u.flatten()
+    
+    def call_lqr_override(self, state, goal_position):
+        """
+        LQR stabilization for calibration
+        """
+        original_state = state.copy()
+        states = np.array(state).reshape(self.nbr_flying_robots, -1)
+        self.get_logger().info(" USING LQR CONTROLLER ")
+        
+        u_hover = [self.u_hover_evader, self.u_hover_pursuer]
+        if GHOST_AGENT == "pursuer":
+            states = np.array([states[0][0:6], self.ghost_state_pursuer[[0, 4, 8, 1, 5, 9]]])
+        elif GHOST_AGENT == "evader":
+            states = np.array([self.ghost_state_evader[[0, 4, 8, 1, 5, 9]], states[0][0:6]])
+        elif GHOST_AGENT == "none":
+            pass  # states is already sorted correctly
+        elif GHOST_AGENT == "both":
+            u_hover = np.array([self.u_hover_evader, self.u_hover_pursuer])
+            self.get_logger().info(f"states RAW: {states}") # [x, y, z, vx, vy, vz, qx, qy, qz, qw, omega_x, omega_y, omega_z, ...]
+            states = np.array([self.ghost_state_evader[[0, 4, 8, 1, 5, 9]], self.ghost_state_pursuer[[0, 4, 8, 1, 5, 9]]])
+            self.get_logger().info(f"states DR: {states}") # [x1, v1_x, θ1_x, ω1_x, y1, v1_y, θ1_y, ω1_y, z1, v1_z]
+            self.get_logger().info(f"goal_positions: {goal_position}") # [x1, v1_x, θ1_x, ω1_x, y1, v1_y, θ1_y, ω1_y, z1, v1_z]
+            self.get_logger().info(f"u_hover: {u_hover}") # [x1, v1_x, θ1_x, ω1_x, y1, v1_y, θ1_y, ω1_y, z1, v1_z]
+        else:
+            raise ValueError(f"Unknown GHOST_AGENT {GHOST_AGENT} type for LQR")
+
+        u = np.zeros((2, 4))
+
+        for i, state in enumerate(states):
+            if GHOST_AGENT == "pursuer" and i == 0:
+                euler_angles = rowan.to_euler(([original_state[9], original_state[6], original_state[7], original_state[8]]), "xyz")
+                yaw = euler_angles[2]
+            elif GHOST_AGENT == "evader" and i == 1:
+                euler_angles = rowan.to_euler(([original_state[9], original_state[6], original_state[7], original_state[8]]), "xyz")
+                yaw = euler_angles[2]
+            elif GHOST_AGENT == "none":
+                euler_angles = rowan.to_euler(([state[9], state[6], state[7], state[8]]), "xyz")
+                yaw = euler_angles[2]
+            else:
+                yaw = 0.
+            near_hover_state = np.concatenate([state[0:6], np.array([yaw])])
+            u[i] = u_hover[i] + self.gain_matrix @ (near_hover_state - np.concatenate((goal_position[i], np.zeros(4))))
+            u[i, :2] = np.clip(u[i, :2], -0.2, 0.2)
+            u[i, 3] = np.clip(u[i, 3], 4, 16.0)
+
+        if self.emergency_lqr_override_evader_inuse:
+            deviations = np.linalg.norm(states[0, 0:3] - goal_position[0])
+            if np.all(deviations < LQR_OVERRIDE_EXIT_THRESH):
+                self.get_logger().info("[EMERGENCY ARENA OVERRIDE] Evader LQR intervention succeeded, resuming DeepReach control")
+                self.emergency_lqr_override_evader_inuse = False
+
+        if self.emergency_lqr_override_pursuer_inuse:
+            deviations = np.linalg.norm(states[1, 0:3] - goal_position[1])
+            if np.all(deviations < LQR_OVERRIDE_EXIT_THRESH):
+                self.get_logger().info("[EMERGENCY ARENA OVERRIDE] Pursuer LQR intervention succeeded, resuming DeepReach control")
+                self.emergency_lqr_override_pursuer_inuse = False
+
+        return u.flatten()        
 
     def call_pe(self, state):
         """
@@ -825,6 +898,66 @@ class DeepReach20DControllerGhost(TemplateController):
             # self.get_logger().info(f"Pursuer control: {pursuer_control}")
             # self.get_logger().info(f"value: {value.item():.4f}")
             # self.get_logger().info(f"ellx: {ellx.item():.4f}")
+
+            ## Emergency fallback to LQR if OOB
+            if USE_EMERGENCY_ARENA_OVERRIDE and self.in_flight:
+
+                # Check if either agent OOB
+                if not self.emergency_lqr_override_evader_inuse:
+                    if np.abs(drone_20d_state[0]).item() > ARENA_X_LIMIT or np.abs(drone_20d_state[4]).item() > ARENA_Y_LIMIT or drone_20d_state[8].item() < ARENA_Z_MIN or drone_20d_state[8].item() > ARENA_Z_MAX:
+                        self.in_bounds_evader = False
+                    else:
+                        self.in_bounds_evader = True
+                        # self.last_safe_evader_pos = [drone_20d_state[0], drone_20d_state[4], drone_20d_state[8]]
+                        self.last_safe_evader_pos = [RESET_PROJ_FACTOR * drone_20d_state[0], RESET_PROJ_FACTOR * drone_20d_state[4], RESET_PROJ_FACTOR * (drone_20d_state[8] - (ARENA_Z_MAX + ARENA_Z_MIN)/2.) + (ARENA_Z_MAX + ARENA_Z_MIN)/2.]
+                        # FIXME project back inwards by a factor to avoid deadlock on boundary
+                
+                if not self.emergency_lqr_override_pursuer_inuse:
+                    if np.abs(drone_20d_state[10]).item() > ARENA_X_LIMIT or np.abs(drone_20d_state[14]).item() > ARENA_Y_LIMIT or drone_20d_state[18].item() < ARENA_Z_MIN or drone_20d_state[18].item() > ARENA_Z_MAX:
+                        self.in_bounds_pursuer = False
+                    else:
+                        self.in_bounds_pursuer = True
+                        # self.last_safe_pursuer_pos = [drone_20d_state[10], drone_20d_state[14], drone_20d_state[18]]
+                        self.last_safe_pursuer_pos = [RESET_PROJ_FACTOR * drone_20d_state[10], RESET_PROJ_FACTOR * drone_20d_state[14], RESET_PROJ_FACTOR * (drone_20d_state[18] - (ARENA_Z_MAX + ARENA_Z_MIN)/2.) + (ARENA_Z_MAX + ARENA_Z_MIN)/2.]
+
+                # Override to LQR if either agent OOB
+                if not self.in_bounds_evader or not self.in_bounds_pursuer or self.emergency_lqr_override_evader_inuse or self.emergency_lqr_override_pursuer_inuse:
+
+                    self.get_logger().info("[EMERGENCY ARENA OVERRIDE] Agent(s) exited arena domain, falling back to LQR; EVADER in? {}, PURSUER in? {}".format(self.in_bounds_evader, self.in_bounds_pursuer))
+                    safe_goal_position = np.array([self.last_safe_evader_pos, self.last_safe_pursuer_pos])
+
+                    # Update reset goal if OOB AND not already in LQR override
+                    if not self.in_bounds_evader and not self.emergency_lqr_override_evader_inuse:
+                        safe_goal_position[0] = self.last_safe_evader_pos
+                        self.emergency_lqr_override_evader_inuse = True
+                        self.get_logger().info(f"[EMERGENCY ARENA OVERRIDE] Evader exited resetting to {self.last_safe_evader_pos}")
+
+                    if not self.in_bounds_pursuer and not self.emergency_lqr_override_pursuer_inuse:
+                        safe_goal_position[1] = self.last_safe_pursuer_pos
+                        if GHOST_AGENT == "evader":
+                            safe_goal_position[0] = self.last_safe_pursuer_pos
+                        self.emergency_lqr_override_pursuer_inuse = True
+                        self.get_logger().info(f"[EMERGENCY ARENA OVERRIDE] Pursuer exited resetting to {self.last_safe_pursuer_pos}")
+
+                    u_lqr_override_flat = self.call_lqr_override(state, safe_goal_position)
+                    self.get_logger().info(f"[EMERGENCY ARENA OVERRIDE] LQR override control flat: {u_lqr_override_flat}")
+                    
+                    u_lqr_override = u_lqr_override_flat.reshape(2, 4)
+                    self.get_logger().info(f"[EMERGENCY ARENA OVERRIDE] LQR override control: {u_lqr_override}")
+
+                    if self.emergency_lqr_override_evader_inuse:
+                        evader_control[:] = u_lqr_override[0][[1, 0, 3]]  # roll, pitch, thrust
+                        evader_control[0] = -evader_control[0]  # SIGN CHANGE ? for drone convention (+pitch = negative x acceleration)
+                        optimal_u = torch.tensor([(evader_control[0] / max_torque,
+                                                   evader_control[1] / max_torque,
+                                                   evader_control[2] / max_thrust)], device=device)
+
+                    if self.emergency_lqr_override_pursuer_inuse:
+                        pursuer_control[:] = u_lqr_override[1][[1, 0, 3]]  # roll, pitch, thrust
+                        pursuer_control[0] = -pursuer_control[0]  # SIGN CHANGE ? for drone convention (+pitch = negative x acceleration)
+                        optimal_d = torch.tensor([(pursuer_control[0] / max_torque,
+                                                   pursuer_control[1] / max_torque,
+                                                   pursuer_control[2] / max_thrust)], device=device)
 
             # Apply control limits for safety     # T2_z
             # FIXME: Add in that we want to control yaw again
