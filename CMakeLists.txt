@@ -8,7 +8,9 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 find_package(rclpy REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(example_interfaces REQUIRED)
 find_package(crazyflie_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -31,15 +33,23 @@ install(PROGRAMS
   scripts/deepreach_controller_test.py
   scripts/6d_test.py
   scripts/calibration_controller.py
+  scripts/realmcf_tracker_controller.py
+  scripts/input_lemniscate.py
   DESTINATION lib/${PROJECT_NAME})
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/CFTraj.msg"
+  "msg/CFTrajArray.msg"
   "msg/StateStamped.msg"
   "srv/Command.srv"
+  DEPENDENCIES builtin_interfaces
   )
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
+  ament_add_pytest_test(test_traj_manager test/test_traj_manager.py)
+  ament_add_pytest_test(test_tracker_utils test/test_tracker_utils.py)
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files
   set(ament_cmake_copyright_FOUND TRUE)
