@@ -28,6 +28,9 @@ install(PROGRAMS
   scripts/pursuit_evasion_controller.py
   scripts/20d_drone_controller.py
   scripts/20d_drone_controller_ghost.py
+  scripts/herd_controller.py
+  scripts/delivery_controller.py
+  scripts/dog_tracker.py
   scripts/deepreach_controller_test.py
   scripts/6d_test.py
   scripts/calibration_controller.py
