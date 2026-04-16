@@ -38,12 +38,13 @@ np.set_printoptions(precision=2, suppress=True, floatmode='fixed')
 
 MODE = ["hover", "deepreach"][1]  # Default to deepreach mode
 GHOST_CONTROL_MODE = ["hover", "circle", "deepreach"][2]  # How to control the ghost agent (NOTE only when GHOST_AGENT is not "both")
-INIT_SETUP = 2
+INIT_SETUP = 3
 LOOKBACK_TIME = 1. # deepreach
+LOOKBACK_TIME_FOLLOW = 2.
 CONTROLLER_RATE = 50.   # NOTE: WILL TRIED 50, 30, 10 --> 30 maybe best?
 CALIBRATE_FIRST = True
 
-GHOST_AGENT = ["pursuer", "evader", "both", "none"][3]
+GHOST_AGENT = ["pursuer", "evader", "both", "none"][2]
 CLAMP_RPYT_CONTROLS = False
 REAL_TORQUE_MAG = 0.1
 # REAL_THRUST_MAX = 10.
@@ -58,20 +59,23 @@ SIMPLE_RADIUS = 1.5
 SIMPLE_FREQ = 0.05
 SIMPLE_HEIGHT = 1.
 
-TWOPLAYER_MODEL_NAME = "halfellipse_PEonly" # "halfellipse_PEonly"
+TWOPLAYER_MODEL_NAME = "halfellipse_boundarymultiply5"  #"halfellipse_PEonly" # "halfellipse_PEonly"
 
-TWOPLAYER_MODEL_FOLLOW_NAME = "halfellipse_PEonly"
+TWOPLAYER_MODEL_FOLLOW_NAME = "halfellipse_boundarymultiply5_follow"  #"halfellipse_PEonly"
 USE_FOLLOW_FILTER = False # Whether to apply the follow strategy for the pursuer
+FOLLOW_FILTER_TYPE = "hamiltonian"  # value or hamiltonian
 FOLLOW_VALUE_THRESHOLD = 0.1 # If value fn > threshold, switch to follow strategy
+FOLLOW_HAMILTONIAN_THRESHOLD = 0.05
+
 
 USE_PURSUER_ARENA_FILTER = True # Use add'l value fn to contain agents (MODE = "deepreach" only)
 USE_EVADER_ARENA_FILTER = True
-SINGLEAGENT_MODEL_NAME = "Drone10D_posvel" # "Drone10D_posvel" (BEST) "Drone10D_posvel" # "lowerbounds_lowthrust", "Drone10D_MPC_box", "Drone10D_omega2_box"
+SINGLEAGENT_MODEL_NAME = "custom_ponly" #"Drone10D_posvel" # "Drone10D_posvel" (BEST) "Drone10D_posvel" # "lowerbounds_lowthrust", "Drone10D_MPC_box", "Drone10D_omega2_box"
 EVADER_ARENA_VALUE_THRESHOLD = 0.1
-PURSUER_ARENA_VALUE_THRESHOLD = 0.0 # If arena val fn < threshold, switch to stay-in-box strategy
+PURSUER_ARENA_VALUE_THRESHOLD = 0.1 # If arena val fn < threshold, switch to stay-in-box strategy
 
 USE_SMOOTH_ARENA_FILTER = True
-BETA_SMOOTHING = 1.
+BETA_SMOOTHING = 5.
 
 LOAD_PRESOLVED_EVADER_TRAJ = False  # Whether to load a presolved trajectory for the evader agent
 PRESOLVED_EVADER_FILE = "EVADER_STATES_20drones_pursuerghost_ic2_20250903_205521.npz"  # File containing presolved evader trajectory
@@ -83,11 +87,12 @@ INTEG_STRETCH_FACTOR = 0.75 # stretch the time_step s.t. xi <- xi + stretch * dt
 
 USE_EMERGENCY_ARENA_OVERRIDE = True # Whether to override controls to keep agents in arena
 ARENA_X_LIMIT = 3.8
-ARENA_Y_LIMIT = 1.7
+ARENA_Y_LIMIT = 2.0
 ARENA_Z_MIN = 0.4
 ARENA_Z_MAX = 2.0
 LQR_OVERRIDE_EXIT_THRESH = 0.5 # When to exit LQR override (exiting agent(s) within this distance of last in bounds pos)
 RESET_PROJ_FACTOR = 0.9 # When resetting to last safe pos, scale reset towards center of arena by this factor (to avoid deadlock)
+
 
 class DeepReach20DControllerGhost(TemplateController):
     def __init__(self, node_name='deepreach_20d_controller_ghost'):
@@ -116,16 +121,17 @@ class DeepReach20DControllerGhost(TemplateController):
 
         ## 2 - OFFSET ##
         elif INIT_SETUP == 2:
-            self.ghost_state_evader = np.array([0.1, 0., 0., 0., 0.2, 0., 0., 0., 1.0, 0.])  # Initial EVADER ghost position 
-            self.ghost_state_pursuer = np.array([-2.0, 0., 0., 0., -0.2, 0., 0., 0., 1.0, 0.])  # Initial PURSUER ghost position
-            # self.ghost_state_evader = np.array([0.3, 0., 0., 0., -0.2, 0., 0., 0., 1.0, 0.])  # Initial EVADER ghost position 
+            # self.ghost_state_evader = np.array([0.1, 0., 0., 0., 0.2, 0., 0., 0., 1.0, 0.])  # Initial EVADER ghost position 
+            # self.ghost_state_pursuer = np.array([-2.0, 0., 0., 0., -0.2, 0., 0., 0., 1.0, 0.])  # Initial PURSUER ghost position
+            # self.ghost_state_evader = np.array([0.3, 0., 0., 0., -0.2, 0., 0., 0., 0.5, 0.])  # Initial EVADER ghost position 
+            self.ghost_state_evader = np.array([0.8, 0., 0., 0., -0.8, 0., 0., 0., 1., 0.])  # Initial EVADER ghost position 
             # self.ghost_state_evader = np.array([0.5, 0., 0., 0., -0.4, 0., 0., 0., 1.0, 0.])  # Initial EVADER ghost position  TEMP TEMP
-            # self.ghost_state_pursuer = np.array([-0.3, 0., 0., 0., 0.2, 0., 0., 0., 0.5, 0.])  # Initial PURSUER ghost position
+            self.ghost_state_pursuer = np.array([-0.8, 0., 0., 0., 0.8, 0., 0., 0., 1., 0.])  # Initial PURSUER ghost position
 
         ## 3 - DIFF HEIGHTS ##
         elif INIT_SETUP == 3:
-            self.ghost_state_evader = np.array([-0.1, 0., 0., 0., 0.1, 0., 0., 0., 0.2, 0.])  # Initial EVADER ghost position 
-            self.ghost_state_pursuer = np.array([0.3, 0., 0., 0., 0.1, 0., 0., 0., 0.8, 0.])  # Initial PURSUER ghost position
+            self.ghost_state_evader = np.array([2.1, 0., 0., 0., -0.5, 0., 0., 0., 0.7, 0.])  # Initial EVADER ghost position 
+            self.ghost_state_pursuer = np.array([-2.3, 0., 0., 0., 0.1, 0., 0., 0., 1.0, 0.])  # Initial PURSUER ghost position
 
         ## 4 - EVADER ABOVE ##
         elif INIT_SETUP == 4:
@@ -505,9 +511,18 @@ class DeepReach20DControllerGhost(TemplateController):
         optimal_u, optimal_d, value, dv, ellx = self.infer_deepreach(state, LOOKBACK_TIME, self.model, self.dynamics)
         values = {"game": value}
         ## FOLLOW FILTER ##
+        use_follow = False
+        if USE_FOLLOW_FILTER:
+            if FOLLOW_FILTER_TYPE == "value":
+                use_follow = value.item() > FOLLOW_VALUE_THRESHOLD
+            elif FOLLOW_FILTER_TYPE == "hamiltonian":
+                dvs = dv[..., [14, 18, 20]]
+                hamiltonian_term = torch.linalg.vector_norm(dvs, ord=float('inf')).item()
+                self.get_logger().info(f"Hamiltonian term: {hamiltonian_term}")
+                use_follow = hamiltonian_term < FOLLOW_HAMILTONIAN_THRESHOLD
 
-        if USE_FOLLOW_FILTER and value.item() > FOLLOW_VALUE_THRESHOLD:
-            _, optimal_d_follow, _, _, _ = self.infer_deepreach(state, LOOKBACK_TIME, self.model_follow, self.dynamics_follow)
+        if use_follow:
+            _, optimal_d_follow, _, _, _ = self.infer_deepreach(state, LOOKBACK_TIME_FOLLOW, self.model_follow, self.dynamics_follow)
 
             optimal_d = optimal_d_follow
             # self.get_logger().info(f"Using follow pursuer strategy (value = {value.item()})")

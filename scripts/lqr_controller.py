@@ -26,9 +26,9 @@ class LQRController(TemplateController):
         gain_matrix[3, 5] = -10.0  # v_z -> thrust
         self.gain_matrix = gain_matrix
 
-        self.u_hover = np.array([0.0, 0.0, 0.0, 11.95])
+        self.u_hover = np.array([0.0, 0.0, 0.0, 12.5])
 
-        new_goal_frequency = 0.1
+        new_goal_frequency = 0.001
         # Timer for generating new goal
         self.goal_timer = self.create_timer(1.0 / new_goal_frequency, self.generate_random_goal)
         #edit? one drone 
