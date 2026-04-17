@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import rclpy
 import rowan
+from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
 from example_interfaces.msg import Float32MultiArray
@@ -14,6 +15,8 @@ from std_msgs.msg import Bool, ColorRGBA, Header
 from visualization_msgs.msg import Marker, MarkerArray
 
 from crazyflie_interface_py.template_controller import TemplateController
+
+MODEL_ROOT = pathlib.Path(get_package_share_directory("crazyflie_interface")) / "models"
 
 try:
     import jax
@@ -54,6 +57,7 @@ class IterativePlanningControllerBase(TemplateController):
     smooth_coef: float = 1e-4
     dog_as_flying_agent: bool = True
     publish_dog_plan: bool = False
+    expected_robot_count: int = 0
 
     run_path: str = ""
     agent_radius_real_m: float = 0.11
@@ -77,7 +81,15 @@ class IterativePlanningControllerBase(TemplateController):
         self._ros_parameters = self._param_to_dict(self._parameters)
         robots = self._ros_parameters.get("robots", {})
         self.nbr_robots = len(robots)
-        self.get_logger().info(f"Robots: {list(robots.keys())}")
+        robot_names = list(robots.keys())
+        if self.nbr_robots == 0 and self.expected_robot_count > 0:
+            self.nbr_robots = self.expected_robot_count
+            robot_names = [f"sim_cf_{idx:02d}" for idx in range(self.nbr_robots)]
+            self.get_logger().warning(
+                "No 'robots' ROS parameter provided; falling back to expected sim robot count "
+                f"{self.expected_robot_count}."
+            )
+        self.get_logger().info(f"Robots: {robot_names}")
         self.get_logger().info(f"Number of robots: {self.nbr_robots}")
 
         self.create_subscription(Bool, "cf_interface/flight_status", self.flight_status_callback, 1)
@@ -114,6 +126,7 @@ class IterativePlanningControllerBase(TemplateController):
             return
 
         run_path = pathlib.Path(self.run_path)
+        self.get_logger().info(f"Loading rollout checkpoint from {run_path}")
         _run, self.agent, self.env, _cfg_dict = load_ckpt(run_path, step=None)
         self.collector = Collector.create(
             key=jr.PRNGKey(1234),
@@ -207,10 +220,18 @@ class IterativePlanningControllerBase(TemplateController):
             [np.interp(T_fine, T_time, T_pos[:, ii]) for ii in range(T_pos.shape[1])],
             axis=1,
         )
-        lam = self.smooth_coef * len(T_time)
-        spl_x = make_smoothing_spline(T_fine, T_pos_linterp[:, 0], lam=lam)
-        spl_y = make_smoothing_spline(T_fine, T_pos_linterp[:, 1], lam=lam)
-        T_pos_smooth = np.stack([spl_x(T_fine), spl_y(T_fine)], axis=1)
+        if len(T_fine) <= 3:
+            spline = CubicSpline(T_fine, T_pos_linterp, axis=0)
+            return T_fine, spline
+
+        if len(T_fine) > 5:
+            lam = self.smooth_coef * len(T_time)
+            spl_x = make_smoothing_spline(T_fine, T_pos_linterp[:, 0], lam=lam)
+            spl_y = make_smoothing_spline(T_fine, T_pos_linterp[:, 1], lam=lam)
+            T_pos_smooth = np.stack([spl_x(T_fine), spl_y(T_fine)], axis=1)
+        else:
+            T_pos_smooth = T_pos_linterp
+
         spline = CubicSpline(T_fine, T_pos_smooth, axis=0)
         return T_fine, spline
 
@@ -256,7 +277,11 @@ class IterativePlanningControllerBase(TemplateController):
         self._apply_controlled_observations(controlled_pos_m, controlled_vel_mps)
 
         plan_state = self._make_plan_state()
+        if self.iteration == 0:
+            self.get_logger().info("Running first rollout from observed state")
         traj = self._rollout_once(plan_state)
+        if self.iteration == 0:
+            self.get_logger().info("Building first command set from rollout")
         cmd, viz_trajs, dog_plans = self._build_commands_from_traj(traj)
         self._publish_rviz(viz_trajs, cmd)
         self._publish_dog_plans(dog_plans)
@@ -395,13 +420,14 @@ class IterativePlanningControllerBase(TemplateController):
 
 
 class HerdController(IterativePlanningControllerBase):
-    run_path = "/home/realm/valtr_ws/src/realmcf/pkls/herdos_hardware/VD/20260128-134905_total_hardware"
+    run_path = str(MODEL_ROOT / "20260128-134905_total_hardware")
+    expected_robot_count = 5
     agent_radius_real_m = 0.11
     center_shift_m = np.array([0.24, 0.01], dtype=float)
     vel_max_real_mps = 1.1
     smooth_coef = 1e-4
     use_herd_agents = True
-    cf_herder_idx: list[int] = []
+    cf_herder_idx: list[int] = [0, 1]
     dog_herder_idx: list[int] = []
     dog_face_nearest_herd: bool = True
 
@@ -423,8 +449,8 @@ class HerdController(IterativePlanningControllerBase):
     def _init_shadow_from_template(self):
         base = self.template_state.base
         self.shadow_temporal_node_idx = int(np.asarray(self.template_state.temporal_node_idx)[0])
-        self.shadow_herd_state = np.asarray(base.herd_state)[0].copy()
-        self.shadow_herder_state = np.asarray(base.herder_state)[0].copy()
+        self.shadow_herd_state = np.array(np.asarray(base.herd_state)[0], copy=True)
+        self.shadow_herder_state = np.array(np.asarray(base.herder_state)[0], copy=True)
 
     def _apply_controlled_observations(self, positions_m: np.ndarray, velocities_mps: np.ndarray):
         for robot_idx, (kind, idx) in enumerate(self._controlled_slots()):
@@ -518,9 +544,9 @@ class HerdController(IterativePlanningControllerBase):
         future_herd = np.asarray(traj.state_next.base.herd_state)
         future_herder = np.asarray(traj.state_next.base.herder_state)
         if len(future_herd) > 0:
-            self.shadow_herd_state[:, :2] = future_herd[0]
+            self.shadow_herd_state = np.array(future_herd[0], copy=True)
         if len(future_herder) > 0:
-            self.shadow_herder_state = future_herder[0]
+            self.shadow_herder_state = np.array(future_herder[0], copy=True)
         temporal_idx = np.asarray(getattr(traj, "temporal_node_idx", np.array([self.shadow_temporal_node_idx])))
         if temporal_idx.size > 0:
             use_idx = min(1, temporal_idx.size - 1)
@@ -528,7 +554,8 @@ class HerdController(IterativePlanningControllerBase):
 
 
 class DeliveryController(IterativePlanningControllerBase):
-    run_path = "/home/realm/valtr_ws/src/realmcf/pkls/deliveryrealv2/VD/20260129-154526_baker_reset-v4"
+    run_path = str(MODEL_ROOT / "20260129-154526_baker_reset-v4")
+    expected_robot_count = 3
     agent_radius_real_m = 0.112
     center_shift_m = np.array([0.24, 0.01], dtype=float) + np.array([0.18, 0.10], dtype=float)
     vel_max_real_mps = 0.6
@@ -551,9 +578,9 @@ class DeliveryController(IterativePlanningControllerBase):
     def _init_shadow_from_template(self):
         base = self.template_state.base
         self.shadow_temporal_node_idx = int(np.asarray(self.template_state.temporal_node_idx)[0])
-        self.shadow_herd_state = np.asarray(base.herd_state)[0].copy()
-        self.shadow_herder_state = np.asarray(base.herder_state)[0].copy()
-        self.shadow_centers = np.asarray(base.centers)[0].copy()
+        self.shadow_herd_state = np.array(np.asarray(base.herd_state)[0], copy=True)
+        self.shadow_herder_state = np.array(np.asarray(base.herder_state)[0], copy=True)
+        self.shadow_centers = np.array(np.asarray(base.centers)[0], copy=True)
 
     def _apply_controlled_observations(self, positions_m: np.ndarray, velocities_mps: np.ndarray):
         for robot_idx, (_kind, idx) in enumerate(self._controlled_slots()):
@@ -617,11 +644,11 @@ class DeliveryController(IterativePlanningControllerBase):
         future_herder = np.asarray(traj.state_next.base.herder_state)
         future_centers = np.asarray(traj.state_next.base.centers[:, :2, :2])
         if len(future_herd) > 0:
-            self.shadow_herd_state[:, :2] = future_herd[0]
+            self.shadow_herd_state = np.array(future_herd[0], copy=True)
         if len(future_herder) > 0:
-            self.shadow_herder_state = future_herder[0]
+            self.shadow_herder_state = np.array(future_herder[0], copy=True)
         if len(future_centers) > 0:
-            self.shadow_centers = future_centers[0]
+            self.shadow_centers = np.array(future_centers[0], copy=True)
         temporal_idx = np.asarray(getattr(traj, "temporal_node_idx", np.array([self.shadow_temporal_node_idx])))
         if temporal_idx.size > 0:
             use_idx = min(1, temporal_idx.size - 1)

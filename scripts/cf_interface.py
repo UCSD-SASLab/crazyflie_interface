@@ -16,7 +16,7 @@ import rowan
 from collections import deque
 
 MODE = "both"
-CONTROL_MODE = "control"   # "full_state" for 12d or "control" for 20d only
+CONTROL_MODE = "both"   # support legacy control and full_state simultaneously
 ANGULAR_VEL_CALC_METHOD = ["direct", "direct_averaged", "finite_difference"][1]  # How to get angular velocity from orientation
 AVERAGE_WINDOW_SIZE = 30  # Only used if ANGULAR_VEL_CALC_METHOD is "direct_averaged"
 CLIP_THETA_OMEGA = True # clips thetas to
@@ -80,24 +80,22 @@ class CfInterface(Node):
 
         # Control sub/pub
         if self.backend in ["cflib", "sim"]:
-            if CONTROL_MODE == "control":
-                self.cmd_vel_publishers = {}
-                self.get_logger().info(f"Setting up cmd_vel publishers for: {self.crazyflie_names}")
-                for name in self.crazyflie_names:
-                    self.cmd_vel_publishers[name] = self.create_publisher(
-                        Twist, f"{name}/cmd_vel_legacy", 1
-                    )
-                    self.get_logger().info(f"Created cmd_vel publisher for {name}")
-                    # TODO: Add an else option for cmd_full_state and create its associated publisher
-            elif CONTROL_MODE == "full_state":
-                self.cmd_full_state_publishers = {}
-                self.get_logger().info(f"Setting up cmd_full_state publishers for: {self.crazyflie_names}")
-                for name in self.crazyflie_names:
-                    self.cmd_full_state_publishers[name] = self.create_publisher(
-                        FullState, f"{name}/cmd_full_state", 1
-                    )
-                self.FullStateMsg = FullState()
-                self.FullStateMsg.header.frame_id = '/world'
+            self.cmd_vel_publishers = {}
+            self.get_logger().info(f"Setting up cmd_vel publishers for: {self.crazyflie_names}")
+            for name in self.crazyflie_names:
+                self.cmd_vel_publishers[name] = self.create_publisher(
+                    Twist, f"{name}/cmd_vel_legacy", 1
+                )
+                self.get_logger().info(f"Created cmd_vel publisher for {name}")
+
+            self.cmd_full_state_publishers = {}
+            self.get_logger().info(f"Setting up cmd_full_state publishers for: {self.crazyflie_names}")
+            for name in self.crazyflie_names:
+                self.cmd_full_state_publishers[name] = self.create_publisher(
+                    FullState, f"{name}/cmd_full_state", 1
+                )
+            self.FullStateMsg = FullState()
+            self.FullStateMsg.header.frame_id = '/world'
         else:
             raise NotImplementedError("Backend not yet supported")
         self.arm_service = self.create_client(Arm, 'all/arm')
@@ -106,11 +104,15 @@ class CfInterface(Node):
         self.arm_service.wait_for_service()
         self.arm_service.call_async(req)
         self.get_logger().info("Arming Crazyflie")        
-        if CONTROL_MODE == "control":
+        if self.backend == "sim":
+            self.in_flight = True
+            self.callback_flight_status()
+            self.get_logger().info("Sim backend detected; enabling in-flight control immediately.")
+        if CONTROL_MODE in ["control", "both"]:
             self.create_subscription(Float32MultiArray, 'cf_interface/control', self.callback_control, 1)
-        elif CONTROL_MODE == "full_state":
+        if CONTROL_MODE in ["full_state", "both"]:
             self.create_subscription(Float32MultiArray, 'cf_interface/control_full_state', self.callback_control_full_state, 1)
-        else:
+        if CONTROL_MODE not in ["control", "full_state", "both"]:
             raise NotImplementedError("Control mode not yet supported")
         self.get_logger().info(f"Control mode: {CONTROL_MODE}")
         self.state_is_publishing = False

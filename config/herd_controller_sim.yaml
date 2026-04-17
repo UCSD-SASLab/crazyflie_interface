@@ -1,0 +1,24 @@
+/**:
+  ros__parameters:
+    backend: sim
+    robots:
+      cf1:
+        enabled: true
+        uri: radio://0/80/2M/E7E7E7E701
+        initial_position: [-1.5, -0.6, 0.0]
+      cf2:
+        enabled: true
+        uri: radio://0/80/2M/E7E7E7E702
+        initial_position: [-1.5, -0.2, 0.0]
+      cf3:
+        enabled: true
+        uri: radio://0/80/2M/E7E7E7E703
+        initial_position: [-1.5, 0.2, 0.0]
+      cf4:
+        enabled: true
+        uri: radio://0/80/2M/E7E7E7E704
+        initial_position: [-1.8, -0.4, 0.0]
+      cf5:
+        enabled: true
+        uri: radio://0/80/2M/E7E7E7E705
+        initial_position: [-1.8, 0.4, 0.0]

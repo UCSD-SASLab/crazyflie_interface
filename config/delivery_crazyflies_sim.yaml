@@ -1,0 +1,34 @@
+robots:
+  cf1:
+    enabled: true
+    uri: radio://0/80/2M/E7E7E7E701
+    initial_position: [-1.0, -0.3, 0.0]
+    type: cf21_single
+  cf2:
+    enabled: true
+    uri: radio://0/80/2M/E7E7E7E702
+    initial_position: [-1.0, 0.3, 0.0]
+    type: cf21_single
+  cf3:
+    enabled: true
+    uri: radio://0/80/2M/E7E7E7E703
+    initial_position: [-1.5, 0.0, 0.0]
+    type: cf21_single
+robot_types:
+  cf21_single:
+    motion_capture:
+      enabled: false
+      dynamics: default
+    big_quad: false
+    battery:
+      voltage_warning: 3.8
+      voltage_critical: 3.7
+all:
+  firmware_logging:
+    enabled: true
+  firmware_params:
+    commander:
+      enHighLevel: 1
+    stabilizer:
+      estimator: 2
+      controller: 2

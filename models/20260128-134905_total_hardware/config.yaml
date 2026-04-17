@@ -1,0 +1,42 @@
+agent:
+  _type: VDMAPPOAgentCfg
+  actor_hids:
+  - 128
+  - 128
+  actor_learn_embedding: false
+  actor_lr: 0.0008
+  actor_shared_trunk: true
+  clip_eps: 0.1
+  critic_hids:
+  - 128
+  - 128
+  critic_lr: 0.001
+  entropy_coef: 0.015
+  gae_lambda: 0.95
+  gamma: 0.99
+  max_grad_norm: 0.5
+  max_prob: 0.9
+  min_entropy_constr_coef: 0.5
+  n_envs_train: 4096
+  n_epochs: 2
+  n_minibatches: 4
+  norm_adv: true
+  p_max_pol: 0.999
+  rollout_T: 30
+  terminate_on_reach: false
+  truncate_reach_thresh: 0.5
+  value_shared_trunk: true
+run:
+  _type: Run
+  agent_name: VD
+  env_name: herdos_hardware
+  folder_suffix: total_hardware
+  name: hardware
+  noun: total
+  run_dir_: /home/oswinso/research/lab/rraa-rl/runs/herdos_hardware/VD/20260128-134905_total_hardware
+  start_time: 2026-01-28 13:49:05.734745
+trainer:
+  _type: TrainerCfg
+  eval_every: 5000
+  log_every: 100
+  save_every: 5000

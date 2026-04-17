@@ -2,7 +2,7 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import PathJoinSubstitution, LaunchConfiguration
+from launch.substitutions import PathJoinSubstitution, LaunchConfiguration, PythonExpression
 from launch_ros.substitutions import FindPackageShare
 import yaml
 import os
@@ -40,6 +40,14 @@ def generate_launch_description():
             'backend', default_value='sim',
             description='cpp / cflib / sim backend for crazyflie (crazyswarm2)'
         ),
+        DeclareLaunchArgument(
+            'rviz', default_value='False',
+            description='Whether to launch rviz from the included crazyswarm launch'
+        ),
+        DeclareLaunchArgument(
+            'teleop', default_value='False',
+            description='Whether to launch teleop/joy nodes from the included crazyswarm launch'
+        ),
         
         DeclareLaunchArgument(
             'uri', default_value='',
@@ -59,8 +67,11 @@ def generate_launch_description():
                 ]),
             ]),
             launch_arguments={
+                'crazyflies_yaml_file': LaunchConfiguration('crazyflies_yaml'),
                 'backend': LaunchConfiguration('backend'),
-                'robot_number': LaunchConfiguration('uri')
+                'robot_number': LaunchConfiguration('uri'),
+                'rviz': PythonExpression(["'True' if '", LaunchConfiguration('rviz'), "'.lower() == 'true' else 'False'"]),
+                'teleop': PythonExpression(["'True' if '", LaunchConfiguration('teleop'), "'.lower() == 'true' else 'False'"])
             }.items()
         ) 
     ])

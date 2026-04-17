@@ -17,7 +17,9 @@ find_package(rosidl_default_generators REQUIRED)
 ament_python_install_package(${PROJECT_NAME}_py)
 
 install(DIRECTORY
+  config
   launch
+  models
   DESTINATION share/${PROJECT_NAME})
 
 install(PROGRAMS
