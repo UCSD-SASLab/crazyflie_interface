@@ -306,25 +306,18 @@ class CfInterface(Node):
         for i, name in enumerate(self.crazyflie_names):
             control = np.array(msg.data[16*i:16*(i+1)])
             # self.get_logger().info(f"CONTROL IN cf_interface: {control}")
-            ctrl_msg = self.FullStateMsg
-            ctrl_msg.header.stamp = self.get_clock().now().to_msg()
+            ctrl_msg = FullState()
+            ctrl_msg.header.frame_id = '/world'
             ctrl_msg.pose.position.x = float(control[0])
             ctrl_msg.pose.position.y = float(control[1])
             ctrl_msg.pose.position.z = float(min(max(control[2], 0.2), 2.2))  # To be changed if desired
             ctrl_msg.twist.linear.x = float(control[3])
             ctrl_msg.twist.linear.y = float(control[4])
             ctrl_msg.twist.linear.z = float(control[5])
-            # ctrl_msg.twist.linear.x = 0.0
-            # ctrl_msg.twist.linear.y = 0.0
-            # ctrl_msg.twist.linear.z = 0.0
-            # ctrl_msg.pose.orientation.w = float(control[6])
-            # ctrl_msg.pose.orientation.x = float(control[7])
-            # ctrl_msg.pose.orientation.y = float(control[8])
-            # ctrl_msg.pose.orientation.z = float(control[9])
-            ctrl_msg.pose.orientation.x = 0.
-            ctrl_msg.pose.orientation.y = 0.
-            ctrl_msg.pose.orientation.z = 0.
-            ctrl_msg.pose.orientation.w = 1.
+            ctrl_msg.pose.orientation.x = float(control[6])
+            ctrl_msg.pose.orientation.y = float(control[7])
+            ctrl_msg.pose.orientation.z = float(control[8])
+            ctrl_msg.pose.orientation.w = float(control[9])
             ctrl_msg.twist.angular.x = float(control[10])
             ctrl_msg.twist.angular.y = float(control[11])
             ctrl_msg.twist.angular.z = float(control[12])
